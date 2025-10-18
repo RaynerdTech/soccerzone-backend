@@ -1,0 +1,28 @@
+<div style="font-family: Arial, sans-serif; background-color: #f6f7f8; padding: 20px;">
+  <div style="max-width: 600px; margin: auto; background: #fff; border-radius: 8px; overflow: hidden; border: 1px solid #ddd;">
+    <div style="background: #004d25; padding: 16px; color: white; text-align: center;">
+      <h2 style="margin: 0;">⚽ SoccerZone</h2>
+      <p style="margin: 0;">Booking Confirmation</p>
+    </div>
+    <div style="padding: 24px;">
+      <p>Hi <strong>{{teamName}}</strong>,</p>
+      <p>Your booking has been <strong style="color: green;">confirmed</strong>. Please find the details below:</p>
+      <p><strong>Date:</strong> {{date}}</p>
+      <p><strong>Ticket ID:</strong> <code>{{ticketId}}</code></p>
+      <p><strong>Booked Slots:</strong></p>
+
+      {{#each bookings}}
+      <div style="background:#f2f2f2; padding:10px; margin-bottom:5px; border-radius:5px;">
+        {{startTime}} - {{endTime}}
+      </div>
+      {{/each}}
+
+      <p>Please present this email (or Ticket ID) at the pitch on arrival.</p>
+    </div>
+    <div style="background: #f6f7f8; padding: 12px; text-align: center; font-size: 13px; color: #777;">
+      38 Engr David Ekundayo Hughes Street (formerly known as Ajoke Osho street), off Olaniyi Street New Oko-Oba, Ifako/Ijaiye Local Government Area of Lagos State.<br>
+      This email was sent by <strong>SoccerZone</strong><br>
+      Bringing your team to the pitch!
+    </div>
+  </div>
+</div>
