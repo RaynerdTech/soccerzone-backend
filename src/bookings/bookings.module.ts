@@ -9,6 +9,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ConfigModule } from '@nestjs/config';
 import { SlotModule } from '../slots/slot.module';
 import { MailModule } from '../mail/mail.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 
 
@@ -22,6 +23,7 @@ import { MailModule } from '../mail/mail.module';
     ]),
     SlotModule,
     MailModule,
+    PaymentsModule,
   ],
   controllers: [BookingsController],
   providers: [BookingsService],

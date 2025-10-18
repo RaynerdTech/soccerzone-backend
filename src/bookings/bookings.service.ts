@@ -38,80 +38,108 @@ export class BookingsService {
   /**
    * 1️⃣ Create booking by date and startTimes
    */
-  async bookByDateTime(userId: string, date: string, startTimes: string[]) {
-    const session = await this.connection.startSession();
-    session.startTransaction();
+async bookByDateTime(userId: string, date: string, startTimes: string[]) {
+  const session = await this.connection.startSession();
+  session.startTransaction();
 
-    try {
-      const slotsToBook: SlotDocument[] = [];
+  try {
+    const slotsToBook: SlotDocument[] = [];
+    const unavailableSlots: string[] = []; // To keep track of unavailable start times
 
-      for (const startTime of startTimes) {
-        let slot = await this.slotModel.findOne({ date, startTime }).session(
-          session,
-        );
+    // Check if startTimes is an array and not empty
+    if (!Array.isArray(startTimes) || startTimes.length === 0) {
+      throw new BadRequestException('Invalid input: Start times are required.');
+    }
 
-        // Create slot if not existing
-        if (!slot) {
-          const endTime = this.slotService.calculateEndTime(startTime);
-          slot = new this.slotModel({
-            date,
-            startTime,
-            endTime,
-            status: 'available',
-            isActive: true,
-            amount: this.slotService.defaultSlotAmount,
-          });
-          await slot.save({ session });
-        }
+    for (const startTime of startTimes) {
+      // Check if a valid slot exists for the given date and start time
+      let slot = await this.slotModel.findOne({ date, startTime }).session(session);
 
-        if (slot.status !== 'available') {
-          throw new ConflictException(`Slot not available: ${startTime}`);
-        }
-
-        slotsToBook.push(slot);
+      if (!slot) {
+        // If the slot does not exist, create a new slot
+        const endTime = this.slotService.calculateEndTime(startTime);
+        slot = new this.slotModel({
+          date,
+          startTime,
+          endTime,
+          status: 'available',
+          isActive: true,
+          amount: this.slotService.defaultSlotAmount,
+        });
+        await slot.save({ session });
       }
 
-      const totalAmount = slotsToBook.reduce((sum, s) => sum + s.amount, 0);
-      const bookingId = uuidv4();
+      // If the slot is already booked, add to unavailable slots list
+      if (slot.status !== 'available') {
+        unavailableSlots.push(startTime); // Add to list of unavailable slots
+      } else {
+        slotsToBook.push(slot); // Otherwise, add the slot to the booking list
+      }
+    }
 
-      // Mark slots as pending
-      await this.slotModel.updateMany(
-        { _id: { $in: slotsToBook.map((s) => s._id) } },
-        { $set: { status: 'pending', bookingId, bookedBy: userId } },
-        { session },
-      );
+    // If there are any unavailable slots, throw a conflict exception
+    if (unavailableSlots.length > 0) {
+      throw new ConflictException(`Slots not available: ${unavailableSlots.join(', ')}`);
+    }
 
-      // Create booking
-      await this.bookingModel.create(
-        [
-          {
-            bookingId,
-            user: userId,
-            slotIds: slotsToBook.map((s) => s._id),
-            dates: slotsToBook.map((s) => s.date),
-            startTimes: slotsToBook.map((s) => s.startTime),
-            endTimes: slotsToBook.map((s) => s.endTime),
-            totalAmount,
-            status: 'pending',
-          },
-        ],
-        { session },
-      );
+    // Calculate the total amount for the booking
+    const totalAmount = slotsToBook.reduce((sum, s) => sum + s.amount, 0);
+    const bookingId = uuidv4();
 
-      await session.commitTransaction();
-      session.endSession();
+    // Mark the slots as pending in the database
+    await this.slotModel.updateMany(
+      { _id: { $in: slotsToBook.map((s) => s._id) } },
+      { $set: { status: 'pending', bookingId, bookedBy: userId } },
+      { session },
+    );
 
-      return {
-        bookingId,
-        slotIds: slotsToBook.map((s) => (s._id as Types.ObjectId).toString()),
-        totalAmount,
-      };
-    } catch (error) {
-      await session.abortTransaction();
-      session.endSession();
-      throw error;
+    // Create the booking entry in the database
+    await this.bookingModel.create(
+      [
+        {
+          bookingId,
+          user: userId,
+          slotIds: slotsToBook.map((s) => s._id),
+          dates: slotsToBook.map((s) => s.date),
+          startTimes: slotsToBook.map((s) => s.startTime),
+          endTimes: slotsToBook.map((s) => s.endTime),
+          totalAmount,
+          status: 'pending',
+        },
+      ],
+      { session },
+    );
+
+    // Commit the transaction if everything is successful
+    await session.commitTransaction();
+    session.endSession();
+
+    // Return the booking details
+    return {
+      bookingId,
+      slotIds: slotsToBook.map((s) => (s._id as Types.ObjectId).toString()),
+      totalAmount,
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+
+    // Handle specific error types and provide appropriate messages and status codes
+    if (error instanceof BadRequestException) {
+      throw error; // Already handled at the start
+    } else if (error instanceof ConflictException) {
+      throw error; // Already handled when the slot is not available
+    } else if (error instanceof NotFoundException) {
+      throw new NotFoundException('Slot or booking data not found.');
+    } else if (error instanceof InternalServerErrorException) {
+      throw new InternalServerErrorException('Internal server error while booking the slot.');
+    } else {
+      // Catch any other unhandled errors
+      console.error('Unexpected error:', error);
+      throw new InternalServerErrorException('An unexpected error occurred. Please try again later.');
     }
   }
+}
 
   /**
    * 2️⃣ Lock slots before payment
@@ -160,49 +188,59 @@ export class BookingsService {
   /**
    * 3️⃣ Initiate Paystack Payment
    */
-  async initiatePayment(bookingId: string, userEmail: string) {
-    const booking = await this.bookingModel.findOne({ bookingId });
-    if (!booking) throw new NotFoundException('Booking not found');
-    if (booking.status !== 'pending')
-      throw new BadRequestException('Booking not pending');
+ async initiatePayment(bookingId: string, userEmail: string) {
+  const booking = await this.bookingModel.findOne({ bookingId });
+  if (!booking) throw new NotFoundException('Booking not found');
+  if (booking.status !== 'pending')
+    throw new BadRequestException('Booking not pending');
 
-    const paystackUrl = `${this.configService.get(
-      'PAYSTACK_BASE_URL',
-    )}/transaction/initialize`;
+  const paystackUrl = `${this.configService.get('PAYSTACK_BASE_URL')}/transaction/initialize`;
+  const secretKey = this.configService.get('PAYSTACK_SECRET_KEY');
 
-    const secretKey = this.configService.get('PAYSTACK_SECRET_KEY');
+  // ✅ Convert Naira → Kobo
+  const amountInKobo = booking.totalAmount * 100;
 
-    const payload = {
-      email: userEmail,
-      amount: booking.totalAmount * 100, // Paystack expects amount in kobo
-      reference: bookingId,
-      callback_url: `${this.configService.get('FRONTEND_URL')}/booking/success`,
-      metadata: { bookingId, slotIds: booking.slotIds },
+  const payload = {
+    email: userEmail,
+    amount: amountInKobo,
+    reference: bookingId,
+    callback_url: `${this.configService.get('FRONTEND_URL')}/booking/success`,
+    metadata: {
+      bookingId,
+      slotIds: booking.slotIds,
+    },
+  };
+
+  try {
+    const response = await axios.post(paystackUrl, payload, {
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const data = response.data as {
+      status: boolean;
+      message: string;
+      data: { authorization_url: string };
     };
 
-    const response = await axios.post(paystackUrl, payload, {
-  headers: {
-    Authorization: `Bearer ${secretKey}`,
-    'Content-Type': 'application/json',
-  },
-});
+    if (!data.status) {
+      throw new InternalServerErrorException(
+        `Failed to initiate payment: ${data.message}`,
+      );
+    }
 
-// ✅ Safe cast
-const data = response.data as {
-  status: boolean;
-  message: string;
-  data: { authorization_url: string };
-};
-
-if (!data.status)
-  throw new InternalServerErrorException('Failed to initiate payment');
-
-return {
-  paymentUrl: data.data.authorization_url,
-  reference: bookingId,
-};
-
+    return {
+      paymentUrl: data.data.authorization_url,
+      reference: bookingId,
+    };
+  } catch (error) {
+    console.error('Paystack Error:', error.response?.data || error.message);
+    throw new InternalServerErrorException('Paystack initialization failed');
   }
+}
+
 
   /**
    * 4️⃣ Verify Paystack Signature
@@ -215,6 +253,61 @@ return {
 
     return hash === signature;
   }
+
+
+  async verifyPayment(reference: string) {
+  const paystackUrl = `${this.configService.get(
+    'PAYSTACK_BASE_URL',
+  )}/transaction/verify/${reference}`;
+
+  const secretKey = this.configService.get('PAYSTACK_SECRET_KEY');
+
+  const response = await axios.get(paystackUrl, {
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  const data = response.data;
+
+  if (!data.status) {
+    throw new BadRequestException('Payment verification failed');
+  }
+
+  const paymentStatus = data.data.status; // 'success', 'failed', etc.
+  const amountPaid = data.data.amount / 100; // Paystack returns amount in kobo
+
+  if (paymentStatus !== 'success') {
+    throw new BadRequestException('Payment not successful');
+  }
+
+  // ✅ Find the booking using the reference (which is bookingId)
+  const booking = await this.bookingModel.findOne({ bookingId: reference });
+  if (!booking) throw new NotFoundException('Booking not found');
+
+  // ✅ Check amount matches (optional)
+  if (booking.totalAmount !== amountPaid) {
+    throw new BadRequestException('Amount mismatch');
+  }
+
+  // ✅ Update booking and slots
+  booking.status = 'confirmed';
+  await booking.save();
+
+  await this.slotModel.updateMany(
+    { bookingId: reference },
+    { $set: { status: 'booked' } },
+  );
+
+  return {
+    message: 'Payment verified and booking confirmed',
+    bookingId: booking.bookingId,
+    totalAmount: booking.totalAmount,
+    status: booking.status,
+  };
+}
+
 
   /**
    * 5️⃣ Process Paystack Successful Payment
