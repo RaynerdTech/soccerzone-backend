@@ -17,16 +17,11 @@ async function bootstrap() {
   app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 
   // Enable CORS for your frontend and ngrok tunnel
-  app.enableCors({
-    origin: [
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
-      'https://585cf31adb99.ngrok-free.app',
-    ],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  });
+app.enableCors({
+  origin: process.env.CLIENT_URL || '*',
+  credentials: true,
+});
+
 
   // Run the SuperAdmin seeder (optional: wrap in try/catch)
   try {
