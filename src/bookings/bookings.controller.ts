@@ -9,11 +9,13 @@ import {
   Req,
   ForbiddenException,
 } from '@nestjs/common';
-import { BookingsService } from '../bookings/bookings.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '../auth/roles.enum';
+import { PaymentsService } from '../payments/payments.service';
+import { BookingsService } from '../bookings/bookings.service';
+
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -25,7 +27,10 @@ interface AuthenticatedRequest extends Request {
 
 @Controller('bookings')
 export class BookingsController {
-  constructor(private readonly bookingsService: BookingsService) {}
+  constructor(
+    private readonly bookingsService: BookingsService,
+    private readonly paymentService: PaymentsService,
+  ) {}
 
   /** 1️⃣ Create a new booking and auto-initiate payment */
   @UseGuards(JwtAuthGuard)
@@ -178,6 +183,12 @@ async getUserBookingsByAdmin(
   @Query('status') status?: string,
 ) {
   return this.bookingsService.getUserBookings(userId, status);
+}
+
+
+@Post('verify-payment')
+async verifyPayment(@Body('reference') reference: string) {
+  return this.paymentService.verifyPayment(reference);
 }
 
 }

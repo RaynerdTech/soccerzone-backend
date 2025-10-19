@@ -1,39 +1,49 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
 
-export type BookingDocument = Booking & Document;
+export type BookingDocument = Booking &
+  Document & {
+    createdAt: Date;
+    updatedAt: Date;
+  };
 
 @Schema({ timestamps: true })
 export class Booking {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
-  user: Types.ObjectId; // the user making the booking
+  user: Types.ObjectId;
 
   @Prop({ type: [Types.ObjectId], ref: 'Slot', default: [] })
-  slotIds: Types.ObjectId[]; // store references to slots (more robust than strings)
+  slotIds: Types.ObjectId[];
 
   @Prop({ type: [String], default: [] })
-  dates: string[]; // store dates of each slot
+  dates: string[];
 
   @Prop({ type: [String], default: [] })
-  startTimes: string[]; // store startTimes of each slot
+  startTimes: string[];
 
   @Prop({ type: [String], default: [] })
-  endTimes: string[]; // store endTimes of each slot (optional but useful)
+  endTimes: string[];
 
-  @Prop({ default: 'pending', enum: ['pending', 'booked', 'cancelled', 'failed', 'confirmed'] })
+  @Prop({
+    default: 'pending',
+    enum: ['pending', 'booked', 'cancelled', 'failed', 'confirmed'],
+  })
   status: 'pending' | 'booked' | 'cancelled' | 'failed' | 'confirmed';
 
   @Prop({ default: 0 })
-  amount: number; // can store amount per slot if needed
+  amount: number;
 
   @Prop({ required: true })
-  totalAmount: number; // total amount for the booking
+  totalAmount: number;
 
   @Prop({ type: String, default: null })
   paymentRef: string | null;
 
   @Prop({ type: String, default: null })
   ticketId: string | null;
+
+  @Prop({ type: String, unique: true, sparse: true })
+  reference?: string;
 
   @Prop({ default: false })
   emailSent: boolean;
@@ -45,10 +55,10 @@ export class Booking {
   pendingExpiresAt?: Date | null;
 
   @Prop({ type: String, required: true })
-  bookingId: string; // unique ID for the booking
+  bookingId: string;
 
   @Prop({ type: String, default: null })
-  notes?: string; // optional notes for admin/user
+  notes?: string;
 }
 
 export const BookingSchema = SchemaFactory.createForClass(Booking);
