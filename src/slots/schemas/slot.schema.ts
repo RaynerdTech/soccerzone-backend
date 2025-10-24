@@ -18,8 +18,8 @@ export class Slot {
   @Prop({ default: 20000 })
   amount: number;
 
-  @Prop({ default: 'available', enum: ['available', 'pending', 'booked', 'unavailable'] })
-  status: 'available' | 'pending' | 'booked' | 'unavailable';
+  @Prop({ default: 'available', enum: ['available', 'booked', 'unavailable'] })
+  status: 'available' | 'booked' | 'unavailable';
 
   @Prop({ default: true })
   isActive: boolean;

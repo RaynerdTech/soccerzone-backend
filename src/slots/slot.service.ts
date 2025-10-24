@@ -10,7 +10,6 @@ import { CreateSlotDto } from './dto/create-slot.dto';
 import { UpdateSlotDto } from './dto/update-slot.dto';
 import { ToggleSlotDto } from './dto/toggle-slot.dto';
 import { Role } from '../auth/roles.enum';
-import { SlotModule } from '../slots/slot.module';
 
 @Injectable()
 export class SlotService {
@@ -28,7 +27,6 @@ export class SlotService {
     '18:00',
     '19:00',
   ]; // Example times; adjust as needed
-  // private defaultSlotAmount = process.env.defaultAmount;
 
   public defaultSlotAmount = 20000;
 
@@ -44,53 +42,47 @@ export class SlotService {
   }
 
   /** ✅ Admin-only: update global booking amount for all slots */
-async updateGlobalAmount(amount: number, user: any) {
-  if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
-    throw new ForbiddenException('Only admin can update amount');
+  async updateGlobalAmount(amount: number, user: any) {
+    if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
+      throw new ForbiddenException('Only admin can update amount');
 
-  // Update all existing slots in DB
-  await this.slotModel.updateMany({}, { $set: { amount } });
+    await this.slotModel.updateMany({}, { $set: { amount } });
+    this.defaultSlotAmount = amount;
 
-  // Also update the default in-memory amount for new slots
-  this.defaultSlotAmount = amount; // we'll use this in generateDaySlots
-
-  return { message: `All slots updated to amount: ${amount}` };
-}
-
-/** ✅ Add a new slot time */
-addSlotTime(time: string, user: any) {
-  if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
-    throw new ForbiddenException('Only admin can modify slot times');
-
-  if (!/^\d{2}:\d{2}$/.test(time))
-    throw new ForbiddenException('Time must be in HH:mm format');
-
-  if (!this.slotsPerDay.includes(time)) {
-    this.slotsPerDay.push(time);
-    this.slotsPerDay.sort(); // keep it in order
+    return { message: `All slots updated to amount: ${amount}` };
   }
 
-  return { message: `Time ${time} added`, slotsPerDay: this.slotsPerDay };
-}
+  /** ✅ Add a new slot time */
+  addSlotTime(time: string, user: any) {
+    if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
+      throw new ForbiddenException('Only admin can modify slot times');
 
-/** ✅ Remove a slot time */
-removeSlotTime(time: string, user: any) {
-  if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
-    throw new ForbiddenException('Only admin can modify slot times');
+    if (!/^\d{2}:\d{2}$/.test(time))
+      throw new ForbiddenException('Time must be in HH:mm format');
 
-  const index = this.slotsPerDay.indexOf(time);
-  if (index !== -1) this.slotsPerDay.splice(index, 1); // mutate array instead of reassigning
+    if (!this.slotsPerDay.includes(time)) {
+      this.slotsPerDay.push(time);
+      this.slotsPerDay.sort();
+    }
 
-  return { message: `Time ${time} removed`, slotsPerDay: this.slotsPerDay };
-}
+    return { message: `Time ${time} added`, slotsPerDay: this.slotsPerDay };
+  }
 
+  /** ✅ Remove a slot time */
+  removeSlotTime(time: string, user: any) {
+    if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
+      throw new ForbiddenException('Only admin can modify slot times');
 
+    const index = this.slotsPerDay.indexOf(time);
+    if (index !== -1) this.slotsPerDay.splice(index, 1);
 
+    return { message: `Time ${time} removed`, slotsPerDay: this.slotsPerDay };
+  }
 
   /** Generate full day slots in memory */
   private generateDaySlots(date: string) {
     return this.slotsPerDay.map((time) => ({
-      _id: new Types.ObjectId(), // temporary ID
+      _id: new Types.ObjectId(),
       date,
       startTime: time,
       endTime: this.calculateEndTime(time),
@@ -111,7 +103,6 @@ removeSlotTime(time: string, user: any) {
           ...dbSlot.toObject(),
         });
       } else {
-        // if slot exists in DB but not in template, add it
         slotMap.set(dbSlot.startTime, dbSlot.toObject());
       }
     }
@@ -167,7 +158,6 @@ removeSlotTime(time: string, user: any) {
 
     let slot = await this.slotModel.findOne({ date, startTime });
 
-    // If slot doesn’t exist, create it with updates
     if (!slot) {
       const endTime = this.calculateEndTime(startTime);
       slot = new this.slotModel({
@@ -188,12 +178,14 @@ removeSlotTime(time: string, user: any) {
     Object.assign(slot, dto);
     return slot.save();
   }
-  
-
-
 
   /** ✅ Admin-only: toggle slot activity (auto-create if missing) */
-async toggleStatus(date: string, startTime: string, dto: ToggleSlotDto, user: any) {
+  async toggleStatus(
+    date: string,
+    startTime: string,
+    dto: ToggleSlotDto,
+    user: any,
+  ) {
     if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
       throw new ForbiddenException('Only admin can toggle slot status');
 
@@ -235,14 +227,6 @@ async toggleStatus(date: string, startTime: string, dto: ToggleSlotDto, user: an
   }
 
   /** ✅ Booking helpers */
-  async markSlotsAsPending(slotIds: string[], bookingId: string) {
-    if (!slotIds.length) return;
-    await this.slotModel.updateMany(
-      { _id: { $in: slotIds.map((id) => new Types.ObjectId(id)) } },
-      { $set: { status: 'pending', bookingId } },
-    );
-  }
-
   async markSlotsAsBooked(slotIds: string[], bookingId: string) {
     if (!slotIds.length) return;
     await this.slotModel.updateMany(

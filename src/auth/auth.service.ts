@@ -196,6 +196,9 @@ async forgotPassword(email: string) {
       bookingId: b.bookingId,
       totalAmount: b.totalAmount,
       status: b.status,
+      paymentRef: b.paymentRef,
+      ticketId: b.ticketId,
+      email: b.emailSent,
       createdAt: b.createdAt,
       slots: (b.slotIds as any[]).map((slot) => ({
         date: slot.date,
@@ -203,6 +206,7 @@ async forgotPassword(email: string) {
         endTime: slot.endTime,
         amount: slot.amount,
         status: slot.status,
+        bookedBy: slot.bookedBy,
       })),
     }));
 
