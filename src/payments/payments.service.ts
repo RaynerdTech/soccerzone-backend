@@ -9,6 +9,36 @@ import axios from 'axios';
 import { Booking, BookingDocument } from '../bookings/schemas/booking.schema';
 import { Slot, SlotDocument } from '../slots/schemas/slot.schema';
 import { MailService } from '../mail/mail.service';
+import * as crypto from 'crypto';
+
+/** ✅ Type Definitions (make them exportable for controller use) */
+export interface VerifyPaymentSuccess {
+  success: true;
+  statusCode: number;
+  message: string;
+  data: {
+    bookingId: string;
+    ticketId: string;
+    amount: number;
+    currency: string;
+    emailSent: boolean;
+    slots: {
+      date: string;
+      startTime: string;
+      endTime: string;
+      status: 'available' | 'booked' | 'unavailable';
+    }[];
+  };
+}
+
+export interface VerifyPaymentFailure {
+  success: false;
+  statusCode: number;
+  message: string;
+  error?: any;
+}
+
+export type VerifyPaymentResult = VerifyPaymentSuccess | VerifyPaymentFailure;
 
 @Injectable()
 export class PaymentsService {
@@ -37,18 +67,13 @@ export class PaymentsService {
         };
       }
 
-      // 🔹 Generate a unique reference and attach it to this booking
-      const reference = 'REF-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
-
       const paystackUrl = `${this.configService.get('PAYSTACK_BASE_URL')}/transaction/initialize`;
       const secretKey = this.configService.get('PAYSTACK_SECRET_KEY');
-      const paymentRef = `${bookingId}-${Date.now()}`;
 
       const payload = {
         email: userEmail,
         amount: booking.totalAmount * 100,
-        reference: paymentRef,
-        callback_url: `${this.configService.get('FRONTEND_URL')}/booking/success`,
+        callback_url: `${this.configService.get('FRONTEND_URL')}/payments/booking/success`,
         metadata: { bookingId, slotIds: booking.slotIds },
       };
 
@@ -67,10 +92,10 @@ export class PaymentsService {
         };
       }
 
-      // ✅ Save both reference and paymentRef in DB
+      // ✅ Save Paystack-generated reference in DB
       await this.bookingModel.updateOne(
         { bookingId },
-        { $set: { paymentRef, reference } },
+        { $set: { paymentRef: data.data.reference } },
       );
 
       return {
@@ -79,8 +104,7 @@ export class PaymentsService {
         message: 'Payment initialized successfully',
         data: {
           authorizationUrl: data.data.authorization_url,
-          reference: paymentRef,
-          bookingReference: reference,
+          reference: data.data.reference,
           bookingId,
           totalAmount: booking.totalAmount,
           currency: 'NGN',
@@ -101,106 +125,133 @@ export class PaymentsService {
     }
   }
 
-  /** 🔹 Verify Paystack Payment & Respond before Email */
-  async verifyPayment(reference: string) {
-    const paystackUrl = `${this.configService.get('PAYSTACK_BASE_URL')}/transaction/verify/${reference}`;
-    const secretKey = this.configService.get('PAYSTACK_SECRET_KEY');
+  verifyPaystackSignature(payload: any, signature: string): boolean {
+  const secret = this.configService.get('PAYSTACK_SECRET_KEY');
+  const hash = crypto
+    .createHmac('sha512', secret)
+    .update(JSON.stringify(payload))
+    .digest('hex');
+  return hash === signature;
+}
 
-    try {
-      const response = await axios.get(paystackUrl, {
-        headers: { Authorization: `Bearer ${secretKey}` },
-      });
+  /** 🔹 Verify Paystack Payment & Confirm Booking */
+async verifyPayment(reference: string, fromWebhook = false): Promise<VerifyPaymentResult> {
+  const paystackUrl = `${this.configService.get('PAYSTACK_BASE_URL')}/transaction/verify/${reference}`;
+  const secretKey = this.configService.get('PAYSTACK_SECRET_KEY');
 
-      const data = response.data;
-      if (!data.status) {
-        return { success: false, statusCode: 400, message: 'Payment verification failed' };
-      }
+  try {
+    const response = await axios.get(paystackUrl, {
+      headers: { Authorization: `Bearer ${secretKey}` },
+    });
 
-      const paymentStatus = data.data.status;
-      const amountPaid = data.data.amount / 100;
-      if (paymentStatus !== 'success') {
-        return { success: false, statusCode: 400, message: 'Payment not successful. Please try again.' };
-      }
+    const data = response.data;
+    if (!data.status) {
+      return { success: false, statusCode: 400, message: 'Payment verification failed' };
+    }
 
-      const booking = await this.bookingModel
-        .findOne({ paymentRef: reference })
-        .populate('user', 'name email')
-        .lean();
+    const paymentStatus = data.data.status;
+    const amountPaid = data.data.amount / 100;
 
-      if (!booking) {
-        return { success: false, statusCode: 404, message: 'Booking not found for this reference' };
-      }
+    if (paymentStatus !== 'success') {
+      return { success: false, statusCode: 400, message: 'Payment not successful. Please try again.' };
+    }
 
-      if (booking.totalAmount !== amountPaid) {
-        return {
-          success: false,
-          statusCode: 400,
-          message: 'Amount mismatch between Paystack and booking record',
-        };
-      }
+    // 🔒 Atomically find and lock the booking to avoid duplicate processing
+    const booking = await this.bookingModel.findOne({ paymentRef: reference }).populate('user', 'name email');
 
-      // ✅ Update booking and slots
-      await this.bookingModel.updateOne(
-        { paymentRef: reference },
-        { $set: { status: 'confirmed' } },
-      );
+    if (!booking) {
+      return { success: false, statusCode: 404, message: 'Booking not found for this reference' };
+    }
 
-      await this.slotModel.updateMany(
-        { _id: { $in: booking.slotIds } },
-        { $set: { status: 'booked' } },
-      );
-
-      const slots = await this.slotModel.find({ _id: { $in: booking.slotIds } });
-      const ticketId = this.generateTicketId();
-
-      // ✅ Prepare response payload
-      const responsePayload = {
-        success: true,
-        statusCode: 200,
-        message: 'Payment verified and booking confirmed successfully',
-        data: {
-          bookingId: booking.bookingId,
-          ticketId,
-          amount: booking.totalAmount,
-          currency: 'NGN',
-          emailSent: !!(booking.user as any)?.email,
-          slots: slots.map((s) => ({
-            date: s.date,
-            startTime: s.startTime,
-            endTime: s.endTime,
-            status: s.status,
-          })),
-        },
-      };
-
-      // ✅ Send confirmation email (non-blocking)
-      if ((booking.user as any)?.email) {
-        const payload = {
-          teamName: booking.teamName || (booking.user as any)?.name || 'Guest Team',
-          date: new Date().toLocaleDateString(),
-          ticketId,
-          bookings: slots.map((slot) => ({
-            startTime: slot.startTime,
-            endTime: slot.endTime,
-          })),
-        };
-
-        this.mailService.sendTicket((booking.user as any).email, payload).catch((mailErr) => {
-          console.error('Email send error:', mailErr.message);
-        });
-      }
-
-      return responsePayload;
-    } catch (err) {
-      console.error('Paystack verify error:', err.response?.data || err.message);
+    // 🚫 Prevent re-verification if already processed
+    if (booking.paymentVerified || booking.status === 'confirmed') {
       return {
         success: false,
-        statusCode: err.response?.status || 500,
-        message: 'Internal Server Error during payment verification',
-        error: err.response?.data || err.message,
+        statusCode: 400,
+        message: 'This payment reference has already been used or confirmed.',
       };
     }
+
+    // ✅ Check amount integrity
+    if (booking.totalAmount !== amountPaid) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: 'Amount mismatch between Paystack and booking record',
+      };
+    }
+
+    // ✅ Mark as verified *immediately* to block duplicate use
+    booking.paymentVerified = true;
+    booking.status = 'confirmed';
+    (booking as any).paymentStatus = 'paid';
+
+    const ticketId = this.generateTicketId();
+    const emailSent = !!(booking.user as any)?.email;
+
+    booking.ticketId = ticketId;
+    booking.emailSent = emailSent;
+
+    await booking.save();
+
+    // ✅ Update booked slots
+    await this.slotModel.updateMany(
+      { _id: { $in: booking.slotIds } },
+      {
+        $set: {
+          status: 'booked',
+          bookingId: booking.bookingId,
+          bookedBy: (booking.user as any)?._id,
+        },
+      },
+    );
+
+    const slots = await this.slotModel.find({ _id: { $in: booking.slotIds } });
+
+    // ✅ Send email asynchronously (safe, one-time)
+    if (emailSent) {
+      const payload = {
+        teamName: booking.teamName || (booking.user as any)?.name || 'Guest Team',
+        date: new Date().toLocaleDateString(),
+        ticketId,
+        bookings: slots.map((slot) => ({
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+        })),
+      };
+
+      this.mailService.sendTicket((booking.user as any).email, payload).catch(console.error);
+    }
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: 'Payment verified and booking confirmed successfully',
+      data: {
+        bookingId: booking.bookingId,
+        ticketId,
+        amount: booking.totalAmount,
+        currency: 'NGN',
+        emailSent,
+        slots: slots.map((s) => ({
+          date: s.date,
+          startTime: s.startTime,
+          endTime: s.endTime,
+          status: s.status,
+        })),
+      },
+    };
+  } catch (err) {
+    console.error('Paystack verify error:', err.response?.data || err.message);
+    return {
+      success: false,
+      statusCode: 500,
+      message: 'Internal Server Error during payment verification',
+      error: err.response?.data || err.message,
+    };
   }
+}
+
 
   /** 🎟️ Generate Ticket ID */
   private generateTicketId(): string {
@@ -213,6 +264,7 @@ export class PaymentsService {
       chars.push(numbers[Math.floor(Math.random() * numbers.length)]);
     }
 
+    // Shuffle
     for (let i = chars.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [chars[i], chars[j]] = [chars[j], chars[i]];
@@ -220,4 +272,28 @@ export class PaymentsService {
 
     return chars.join('');
   }
+
+  
+  async getBookingByReference(reference: string) {
+  const booking = await this.bookingModel
+    .findOne({ paymentRef: reference })
+    .populate('slotIds')
+    .lean();
+
+  if (!booking) return null;
+
+  const slots = await this.slotModel.find({ _id: { $in: booking.slotIds } });
+
+  return {
+    bookingId: booking.bookingId,
+    ticketId: booking.ticketId,
+    slots: slots.map((s) => ({
+      date: s.date,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      status: s.status,
+    })),
+  };
+}
+
 }

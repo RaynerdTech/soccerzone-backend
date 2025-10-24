@@ -26,7 +26,7 @@ export class Booking {
 
   @Prop({
     default: 'pending',
-    enum: ['pending', 'booked', 'cancelled', 'failed', 'confirmed'],
+    enum: ['pending', 'paid', 'booked', 'cancelled', 'failed', 'confirmed'],
   })
   status: 'pending' | 'booked' | 'cancelled' | 'failed' | 'confirmed';
 
@@ -38,6 +38,9 @@ export class Booking {
 
   @Prop({ type: String, default: null })
   paymentRef: string | null;
+
+  @Prop({ default: false })
+  paymentVerified: boolean;
 
   @Prop({ type: String, default: null })
   ticketId: string | null;
