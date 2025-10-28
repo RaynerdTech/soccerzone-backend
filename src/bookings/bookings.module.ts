@@ -25,6 +25,7 @@ import { PaymentsModule } from '../payments/payments.module';
     MailModule,
     PaymentsModule,
   ],
+  exports: [MongooseModule],
   controllers: [BookingsController],
   providers: [BookingsService],
 })

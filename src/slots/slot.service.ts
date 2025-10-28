@@ -2,6 +2,8 @@ import {
   Injectable,
   ForbiddenException,
   NotFoundException,
+  Logger,
+  Inject,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -10,9 +12,13 @@ import { CreateSlotDto } from './dto/create-slot.dto';
 import { UpdateSlotDto } from './dto/update-slot.dto';
 import { ToggleSlotDto } from './dto/toggle-slot.dto';
 import { Role } from '../auth/roles.enum';
+import { CacheService } from '../cache/cache.service';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 
 @Injectable()
 export class SlotService {
+  private readonly logger = new Logger(SlotService.name);
   private readonly slotsPerDay = [
     '08:00',
     '09:00',
@@ -26,22 +32,37 @@ export class SlotService {
     '17:00',
     '18:00',
     '19:00',
-  ]; // Example times; adjust as needed
+  ];
 
   public defaultSlotAmount = 20000;
 
-  constructor(@InjectModel(Slot.name) private slotModel: Model<SlotDocument>) {}
+  
+  
 
-  /** Utility: calculate endTime (+1 hour) */
-  public calculateEndTime(startTime: string): string {
-    const [hour, minute] = startTime.split(':').map(Number);
-    const endHour = (hour + 1) % 24;
-    return `${endHour.toString().padStart(2, '0')}:${minute
-      .toString()
-      .padStart(2, '0')}`;
+  constructor(
+    @InjectModel(Slot.name) private slotModel: Model<SlotDocument>,
+    @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+    private readonly cacheService: CacheService,
+  ) {}
+  
+
+   async testCache() {
+    await this.cacheManager.set('test_slot', { name: 'soccerzone' }, 60);
+    const value = await this.cacheManager.get('test_slot');
+    console.log('Fetched from Redis:', value);
+    return value;
   }
 
-  /** ✅ Admin-only: update global booking amount for all slots */
+public calculateEndTime(startTime: string): string {
+  const [hours, minutes] = startTime.split(':').map(Number);
+  const end = new Date();
+  end.setHours(hours + 1, minutes, 0, 0); // example 1-hour slot
+  return `${end.getHours().toString().padStart(2, '0')}:${end
+    .getMinutes()
+    .toString()
+    .padStart(2, '0')}`;
+}
+
   async updateGlobalAmount(amount: number, user: any) {
     if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
       throw new ForbiddenException('Only admin can update amount');
@@ -49,10 +70,12 @@ export class SlotService {
     await this.slotModel.updateMany({}, { $set: { amount } });
     this.defaultSlotAmount = amount;
 
+    // 🔁 Clear all cached slots since all prices changed
+    await this.cacheService.reset();
+
     return { message: `All slots updated to amount: ${amount}` };
   }
 
-  /** ✅ Add a new slot time */
   addSlotTime(time: string, user: any) {
     if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
       throw new ForbiddenException('Only admin can modify slot times');
@@ -68,7 +91,6 @@ export class SlotService {
     return { message: `Time ${time} added`, slotsPerDay: this.slotsPerDay };
   }
 
-  /** ✅ Remove a slot time */
   removeSlotTime(time: string, user: any) {
     if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
       throw new ForbiddenException('Only admin can modify slot times');
@@ -79,7 +101,6 @@ export class SlotService {
     return { message: `Time ${time} removed`, slotsPerDay: this.slotsPerDay };
   }
 
-  /** Generate full day slots in memory */
   private generateDaySlots(date: string) {
     return this.slotsPerDay.map((time) => ({
       _id: new Types.ObjectId(),
@@ -93,7 +114,6 @@ export class SlotService {
     }));
   }
 
-  /** Merge DB modifications into in-memory slots */
   private mergeDbSlots(memorySlots: any[], dbSlots: SlotDocument[]) {
     const slotMap = new Map(memorySlots.map((s) => [s.startTime, s]));
     for (const dbSlot of dbSlots) {
@@ -111,22 +131,32 @@ export class SlotService {
     );
   }
 
-  /** ✅ Get all slots for a date */
+  /** ✅ Fetch all slots for a date (with cache) */
   async findAll(date?: string) {
     if (!date) return [];
 
+    const cacheKey = `slots:${date}`;
+    const cached = await this.cacheService.get<Slot[]>(cacheKey);
+
+    if (cached) {
+      this.logger.log(`Cache HIT for date ${date}`);
+      return cached;
+    }
+
+    this.logger.log(`Cache MISS for date ${date}, fetching from DB...`);
     const memorySlots = this.generateDaySlots(date);
     const dbSlots = await this.slotModel.find({ date }).exec();
-    return this.mergeDbSlots(memorySlots, dbSlots);
+    const merged = this.mergeDbSlots(memorySlots, dbSlots);
+
+    await this.cacheService.set(cacheKey, merged, 300); // cache 5 min
+    return merged;
   }
 
-  /** ✅ Get available slots only */
   async getAvailableSlots(date: string) {
     const allSlots = await this.findAll(date);
     return allSlots.filter((s) => s.status === 'available' && s.isActive);
   }
 
-  /** ✅ Admin-only: create new slot */
   async create(dto: CreateSlotDto, user: any) {
     if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
       throw new ForbiddenException('Only admin can create slots');
@@ -143,10 +173,11 @@ export class SlotService {
       endTime: this.calculateEndTime(dto.startTime),
     });
 
-    return slot.save();
+    const saved = await slot.save();
+    await this.cacheService.del(`slots:${dto.date}`);
+    return saved;
   }
 
-  /** ✅ Admin-only: update or auto-create slot if missing */
   async update(
     date: string,
     startTime: string,
@@ -169,23 +200,18 @@ export class SlotService {
         bookingId: null,
         ...dto,
       });
-      return slot.save();
+    } else if (slot.status === 'booked') {
+      throw new ForbiddenException('Cannot modify a booked slot');
+    } else {
+      Object.assign(slot, dto);
     }
 
-    if (slot.status === 'booked')
-      throw new ForbiddenException('Cannot modify a booked slot');
-
-    Object.assign(slot, dto);
-    return slot.save();
+    const saved = await slot.save();
+    await this.cacheService.del(`slots:${date}`);
+    return saved;
   }
 
-  /** ✅ Admin-only: toggle slot activity (auto-create if missing) */
-  async toggleStatus(
-    date: string,
-    startTime: string,
-    dto: ToggleSlotDto,
-    user: any,
-  ) {
+  async toggleStatus(date: string, startTime: string, dto: ToggleSlotDto, user: any) {
     if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
       throw new ForbiddenException('Only admin can toggle slot status');
 
@@ -201,45 +227,55 @@ export class SlotService {
         isActive: dto.isActive,
         bookingId: null,
       });
-      return slot.save();
+    } else if (slot.status === 'booked') {
+      throw new ForbiddenException('Cannot toggle a booked slot');
+    } else {
+      slot.isActive = dto.isActive;
     }
 
-    if (slot.status === 'booked')
-      throw new ForbiddenException('Cannot toggle a booked slot');
-
-    slot.isActive = dto.isActive;
-    return slot.save();
+    const saved = await slot.save();
+    await this.cacheService.del(`slots:${date}`);
+    return saved;
   }
 
-  /** ✅ Admin-only: delete slot */
   async remove(date: string, startTime: string, user: any) {
     if (![Role.ADMIN, Role.SUPER_ADMIN].includes(user.role))
       throw new ForbiddenException('Only admin can delete slots');
 
     const slot = await this.slotModel.findOne({ date, startTime });
     if (!slot) throw new NotFoundException('Slot not found');
-
     if (slot.status === 'booked')
       throw new ForbiddenException('Cannot delete a booked slot');
 
     await this.slotModel.deleteOne({ date, startTime });
+    await this.cacheService.del(`slots:${date}`);
+
     return { message: 'Slot deleted successfully' };
   }
 
-  /** ✅ Booking helpers */
   async markSlotsAsBooked(slotIds: string[], bookingId: string) {
     if (!slotIds.length) return;
+    const slots = await this.slotModel.find({ _id: { $in: slotIds } });
+    const dates = [...new Set(slots.map((s) => s.date))];
+
     await this.slotModel.updateMany(
       { _id: { $in: slotIds.map((id) => new Types.ObjectId(id)) } },
       { $set: { status: 'booked', bookingId } },
     );
+
+    for (const date of dates) await this.cacheService.del(`slots:${date}`);
   }
 
   async markSlotsAsAvailable(slotIds: string[]) {
     if (!slotIds.length) return;
+    const slots = await this.slotModel.find({ _id: { $in: slotIds } });
+    const dates = [...new Set(slots.map((s) => s.date))];
+
     await this.slotModel.updateMany(
       { _id: { $in: slotIds.map((id) => new Types.ObjectId(id)) } },
       { $set: { status: 'available', bookingId: null } },
     );
+
+    for (const date of dates) await this.cacheService.del(`slots:${date}`);
   }
 }
