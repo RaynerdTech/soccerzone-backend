@@ -1,5 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
-import { CacheService } from './cache/cache.service';
+import { CacheService } from '../cache/cache.service';
 
 @Controller('test')
 export class TestController {
@@ -8,11 +8,12 @@ export class TestController {
   @Get('set')
   async setCache() {
     await this.cacheService.set('greeting', { message: 'Hello Redis!' }, 300);
-    return { status: 'set done' };
+    return { status: 'Cache set successfully' };
   }
 
   @Get('get')
   async getCache() {
-    return await this.cacheService.get('greeting');
+    const value = await this.cacheService.get('greeting');
+    return { value };
   }
 }

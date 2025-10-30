@@ -8,7 +8,6 @@ import {
   Req,
   UseGuards,
   ForbiddenException,
-  Delete,
   Patch,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -19,11 +18,7 @@ import { BookingsService } from './bookings.service';
 import { PaymentsService } from '../payments/payments.service';
 
 interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    role: Role;
-  };
+  user?: { id: string; email: string; role: Role };
 }
 
 @Controller('bookings')
@@ -33,80 +28,64 @@ export class BookingsController {
     private readonly paymentService: PaymentsService,
   ) {}
 
-  /** 1️⃣ Create a new booking and auto-initiate payment */
- @UseGuards(JwtAuthGuard)
-@Post()
-async bookByDate(
-  @Req() req: AuthenticatedRequest,
-  @Query('date') date: string,
-  @Body('startTimes') startTimes: string[],
-) {
-  if (!req.user) throw new ForbiddenException('Unauthorized');
-
-  const booking = await this.bookingsService.bookByDateTime(
-    req.user.id,
-    date,
-    startTimes,
-    req.user.email,
-  );
-
-  return {
-    message: booking.message,
-    bookingId: booking.bookingId,
-    totalAmount: booking.totalAmount,
-    paymentUrl: booking.paymentUrl,
-    reference: booking.paymentRef || null,
-    slots: booking.slots, // ✅ added slot details
-  };
-}
-
-
-  /** 2️⃣ Re-initiate payment for an existing booking */
+  /** 1. Create booking + initiate payment */
   @UseGuards(JwtAuthGuard)
-  @Post('pay/:bookingId')
-  async initiatePayment(
+  @Post()
+  async bookByDate(
     @Req() req: AuthenticatedRequest,
-    @Param('bookingId') bookingId: string,
+    @Query('date') date: string,
+    @Body('startTimes') startTimes: string[],
   ) {
     if (!req.user) throw new ForbiddenException('Unauthorized');
 
-    const payment = await this.bookingsService.initiatePayment(
-      bookingId,
+    const booking = await this.bookingsService.bookByDateTime(
+      req.user.id,
+      date,
+      startTimes,
       req.user.email,
     );
 
     return {
-      message: 'Payment initiated successfully',
-      paymentUrl: payment.paymentUrl,
-      reference: payment.reference,
+      message: booking.message,
+      bookingId: booking.bookingId,
+      totalAmount: booking.totalAmount,
+      paymentUrl: booking.paymentUrl,
+      reference: booking.paymentRef || null,
+      slots: booking.slots,
     };
   }
 
-  /** 3️⃣ Paystack Webhook Listener */
+  /** 2. Re-initiate payment */
+  @UseGuards(JwtAuthGuard)
+  @Post('pay/:bookingId')
+  async initiatePayment(@Req() req: AuthenticatedRequest, @Param('bookingId') bookingId: string) {
+    if (!req.user) throw new ForbiddenException('Unauthorized');
+
+    const payment = await this.bookingsService.initiatePayment(bookingId, req.user.email);
+    return { message: 'Payment initiated', paymentUrl: payment.paymentUrl, reference: payment.reference };
+  }
+
+  /** 3. Paystack webhook listener */
   @Post('webhook')
   async handlePaystackWebhook(@Body() payload: any) {
     if (payload.event === 'charge.success') {
       const bookingId = payload.data.reference;
-      const amountPaid = payload.data.amount / 100;
-
       const booking = await this.bookingsService.verifyPayment(bookingId);
-
       return { status: 'success', booking };
     }
-
     return { status: 'ignored', message: 'Unhandled event type' };
   }
 
-  /** 4️⃣ Get all bookings (Admin only) */
+  /** 4. Admin: get all bookings */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Get('all')
   async getAllBookings() {
     const bookings = await this.bookingsService.getAllBookings();
-    return { message: 'Bookings retrieved successfully', bookings };
+    return { message: 'Bookings retrieved', bookings };
   }
 
-  /** 5️⃣ Get user’s own bookings */
+  /** 5. Get user bookings */
   @UseGuards(JwtAuthGuard)
   @Get()
   async getUserBookings(@Req() req: AuthenticatedRequest) {
@@ -114,7 +93,7 @@ async bookByDate(
     return this.bookingsService.getUserBookings(req.user.id);
   }
 
-  /** 6️⃣ Admin: View a specific user's booking history */
+  /** 6. Admin: get specific user's bookings */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Get('user/:userId')
@@ -122,73 +101,40 @@ async bookByDate(
     return this.bookingsService.getUserBookings(userId);
   }
 
-  /** 7️⃣ Manual payment confirmation (Admin) */
+  /** 7. Admin: manual payment confirmation */
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Post('confirm/manual')
   async confirmManualPayment(@Body('bookingId') bookingId: string) {
-    // If you plan to add this method later in your service
     const booking = await this.bookingsService.verifyPayment(bookingId);
     return { message: 'Manual payment confirmed', booking };
   }
 
- /** 8️⃣ Verify Payment Manually (via endpoint) */
-@Post('verify-payment')
-async verifyPayment(@Body('reference') reference: string): Promise<any> {
-  const result = await this.paymentService.verifyPayment(reference);
+  /** 8. Verify payment via endpoint */
+  @Post('verify-payment')
+  async verifyPayment(@Body('reference') reference: string) {
+    const result = await this.paymentService.verifyPayment(reference);
+    if (!result.success) return { success: false, statusCode: result.statusCode, message: result.message };
 
-  if (!result.success) {
-    return {
-      success: false,
-      statusCode: result.statusCode,
-      message: result.message,
-    };
+    const { bookingId, ticketId, slots } = result.data;
+    return { success: true, statusCode: 200, message: 'Payment verified', data: { bookingId, ticketId, slots } };
   }
 
-  // result.data exists
-  const { bookingId, ticketId, slots } = result.data;
+  /** 9. Cancel single booking */
+  @UseGuards(JwtAuthGuard)
+  @Patch(':bookingId/cancel')
+  async cancelSingleBooking(@Param('bookingId') bookingId: string, @Req() req: any) {
+    const userId = req.user.id;
+    const isAdmin = [Role.ADMIN, Role.SUPER_ADMIN].includes(req.user.role);
+    return this.bookingsService.cancelBooking(bookingId, userId, isAdmin);
+  }
 
-  return {
-    success: true,
-    statusCode: 200,
-    message: 'Payment verified and booking confirmed',
-    data: {
-      bookingId,
-      ticketId,
-      slots,
-    },
-  };
-}
-
-
-@UseGuards(JwtAuthGuard)
-@Patch(':bookingId/cancel')
-async cancelSingleBooking(
-  @Param('bookingId') bookingId: string,
-  @Req() req: any
-) {
-  const userId = req.user.id;
-  const isAdmin =
-    req.user.role === Role.ADMIN || req.user.role === Role.SUPER_ADMIN;
-
-  return this.bookingsService.cancelBooking(bookingId, userId, isAdmin);
-}
-
-/**
- * Cancel or delete multiple bookings at once
- * Body: { bookingIds: string[] }
- */
-@UseGuards(JwtAuthGuard)
-@Patch('cancel/multiple')
-async cancelMultipleBookings(@Req() req: any, @Body('bookingIds') bookingIds: string[]) {
-  const userId = req.user.id;
-  const isAdmin =
-    req.user.role === Role.ADMIN || req.user.role === Role.SUPER_ADMIN;
-
-  return this.bookingsService.cancelOrDeleteBookings(bookingIds, userId, isAdmin);
-}
-
-
-
-
+  /** 10. Cancel multiple bookings */
+  @UseGuards(JwtAuthGuard)
+  @Patch('cancel/multiple')
+  async cancelMultipleBookings(@Req() req: any, @Body('bookingIds') bookingIds: string[]) {
+    const userId = req.user.id;
+    const isAdmin = [Role.ADMIN, Role.SUPER_ADMIN].includes(req.user.role);
+    return this.bookingsService.cancelOrDeleteBookings(bookingIds, userId, isAdmin);
+  }
 }

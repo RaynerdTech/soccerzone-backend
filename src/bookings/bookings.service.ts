@@ -8,7 +8,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/mongoose';
-import { Model, Connection, Types } from 'mongoose';
+import { Model, Connection } from 'mongoose';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
@@ -17,6 +17,7 @@ import { Slot, SlotDocument } from '../slots/schemas/slot.schema';
 import { SlotService } from '../slots/slot.service';
 import { MailService } from '../mail/mail.service';
 import { PaymentsService } from '../payments/payments.service';
+import { CacheService } from '../cache/cache.service';
 
 @Injectable()
 export class BookingsService {
@@ -30,115 +31,99 @@ export class BookingsService {
     private readonly slotService: SlotService,
     private readonly mailService: MailService,
     private readonly paymentsService: PaymentsService,
+    private readonly cacheService: CacheService,
   ) {}
 
+  /** Return default slot amount */
   getDefaultSlotAmount() {
     return this.slotService.defaultSlotAmount;
   }
 
-  /**
-   * 1️⃣ Create booking by date and startTimes (no pending)
-   */
-async bookByDateTime(
-  userId: string,
-  date: string,
-  startTimes: string[],
-  userEmail: string
-) {
-  const session = await this.connection.startSession();
-  session.startTransaction();
+  /** Book slots by date and time */
+  async bookByDateTime(userId: string, date: string, startTimes: string[], userEmail: string) {
+    const session = await this.connection.startSession();
+    session.startTransaction();
 
-  try {
-    if (!Array.isArray(startTimes) || startTimes.length === 0) {
-      throw new BadRequestException('Start times are required.');
-    }
+    try {
+      if (!Array.isArray(startTimes) || !startTimes.length) throw new BadRequestException('Start times required');
 
-    const slotsToBook: SlotDocument[] = [];
-    const unavailableSlots: string[] = [];
+      const slotsToBook: SlotDocument[] = [];
+      const unavailableSlots: string[] = [];
 
-    for (const startTime of startTimes) {
-      let slot = await this.slotModel.findOne({ date, startTime }).session(session);
+      for (const startTime of startTimes) {
+        let slot = await this.slotModel.findOne({ date, startTime }).session(session);
 
-      if (!slot) {
-        const endTime = this.slotService.calculateEndTime(startTime);
-        slot = new this.slotModel({
-          date,
-          startTime,
-          endTime,
-          status: 'available',
-          isActive: true,
-          amount: this.slotService.defaultSlotAmount,
-        });
-        await slot.save({ session });
+        if (!slot) {
+          const endTime = this.slotService.calculateEndTime(startTime);
+          slot = new this.slotModel({
+            date,
+            startTime,
+            endTime,
+            status: 'available',
+            isActive: true,
+            amount: this.slotService.defaultSlotAmount,
+          });
+          await slot.save({ session });
+        }
+
+        slot.status !== 'available' ? unavailableSlots.push(startTime) : slotsToBook.push(slot);
       }
 
-      if (slot.status !== 'available') unavailableSlots.push(startTime);
-      else slotsToBook.push(slot);
+      if (unavailableSlots.length) throw new ConflictException(`Slots not available: ${unavailableSlots.join(', ')}`);
+
+      const totalAmount = slotsToBook.reduce((sum, s) => sum + s.amount, 0);
+      const bookingId = uuidv4();
+
+      await this.bookingModel.create(
+        [
+          {
+            bookingId,
+            user: userId,
+            slotIds: slotsToBook.map((s) => s._id),
+            dates: slotsToBook.map((s) => s.date),
+            startTimes: slotsToBook.map((s) => s.startTime),
+            endTimes: slotsToBook.map((s) => s.endTime),
+            totalAmount,
+            status: 'pending',
+          },
+        ],
+        { session },
+      );
+
+      await session.commitTransaction();
+
+      await this.cacheService.del('all_bookings');
+
+      const paymentInit = await this.paymentsService.initiatePayment(bookingId, userEmail);
+
+      return {
+        statusCode: 201,
+        message: 'Booking created, payment pending',
+        bookingId,
+        totalAmount,
+        status: 'pending',
+        slots: slotsToBook.map((s) => ({
+          slotId: s._id,
+          startTime: s.startTime,
+          endTime: s.endTime,
+          amount: s.amount,
+        })),
+        paymentUrl: paymentInit.data?.authorizationUrl || null,
+        paymentRef: paymentInit.data?.reference || null,
+      };
+    } catch (error) {
+      await session.abortTransaction();
+      this.logger.error('Booking error', error);
+      throw new InternalServerErrorException(error.message || 'Booking failed');
+    } finally {
+      session.endSession();
     }
-
-    if (unavailableSlots.length > 0) {
-      console.error(`Booking error: Slots not available: ${unavailableSlots.join(', ')}`);
-      throw new ConflictException(`Slots not available: ${unavailableSlots.join(', ')}`);
-    }
-
-    const totalAmount = slotsToBook.reduce((sum, s) => sum + s.amount, 0);
-    const bookingId = uuidv4();
-
-    await this.bookingModel.create(
-      [
-        {
-          bookingId,
-          user: userId,
-          slotIds: slotsToBook.map((s) => s._id),
-          dates: slotsToBook.map((s) => s.date),
-          startTimes: slotsToBook.map((s) => s.startTime),
-          endTimes: slotsToBook.map((s) => s.endTime),
-          totalAmount,
-          status: 'pending',
-        },
-      ],
-      { session }
-    );
-
-    await session.commitTransaction();
-    session.endSession();
-
-    const paymentInit = await this.paymentsService.initiatePayment(bookingId, userEmail);
-
-    return {
-      statusCode: 201, // Created
-      message: 'Booking created successfully, payment pending',
-      bookingId,
-      totalAmount,
-      status: 'pending',
-      slots: slotsToBook.map((s) => ({
-        slotId: s._id,
-        startTime: s.startTime,
-        endTime: s.endTime,
-        amount: s.amount,
-      })),
-      paymentUrl: paymentInit.data?.authorizationUrl || null,
-      paymentRef: paymentInit.data?.reference || null,
-    };
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    console.error('Booking error:', error);
-    throw new InternalServerErrorException(error.message || 'Failed to create booking');
   }
-}
 
-
-
-
-  /**
-   * 2️⃣ Initiate Paystack Payment (optional flow)
-   */
+  /** Initialize payment for a booking */
   async initiatePayment(bookingId: string, userEmail: string) {
     const booking = await this.bookingModel.findOne({ bookingId });
     if (!booking) throw new NotFoundException('Booking not found');
-    if (booking.status !== 'booked')
-      throw new BadRequestException('Booking not eligible for payment');
 
     const paystackUrl = `${this.configService.get('PAYSTACK_BASE_URL')}/transaction/initialize`;
     const secretKey = this.configService.get('PAYSTACK_SECRET_KEY');
@@ -149,180 +134,163 @@ async bookByDateTime(
       amount: amountInKobo,
       reference: bookingId,
       callback_url: `${this.configService.get('FRONTEND_URL')}/booking/success`,
-      metadata: {
-        bookingId,
-        slotIds: booking.slotIds,
-      },
+      metadata: { bookingId, slotIds: booking.slotIds },
     };
 
     try {
-      const response = await axios.post(paystackUrl, payload, {
-        headers: {
-          Authorization: `Bearer ${secretKey}`,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      const data = response.data;
+      const { data } = await axios.post(paystackUrl, payload, { headers: { Authorization: `Bearer ${secretKey}` } });
       if (!data.status) throw new InternalServerErrorException(`Payment init failed: ${data.message}`);
 
-      return {
-        paymentUrl: data.data.authorization_url,
-        reference: bookingId,
-      };
+      return { paymentUrl: data.data.authorization_url, reference: bookingId };
     } catch (error) {
-      console.error('Paystack Error:', error.response?.data || error.message);
-      throw new InternalServerErrorException('Paystack initialization failed');
+      this.logger.error('Paystack init error', error.response?.data || error);
+      throw new InternalServerErrorException('Payment initialization failed');
     }
   }
 
-  /**
-   * 3️⃣ Verify Paystack Payment
-   */
+  /** Verify payment and confirm booking */
   async verifyPayment(reference: string) {
     const paystackUrl = `${this.configService.get('PAYSTACK_BASE_URL')}/transaction/verify/${reference}`;
     const secretKey = this.configService.get('PAYSTACK_SECRET_KEY');
 
-    const response = await axios.get(paystackUrl, {
-      headers: { Authorization: `Bearer ${secretKey}` },
-    });
+    const { data } = await axios.get(paystackUrl, { headers: { Authorization: `Bearer ${secretKey}` } });
 
-    const data = response.data;
-    if (!data.status) throw new BadRequestException('Payment verification failed');
+    if (!data.status || data.data.status !== 'success') throw new BadRequestException('Payment not successful');
 
-    const paymentStatus = data.data.status;
     const amountPaid = data.data.amount / 100;
-
-    if (paymentStatus !== 'success') throw new BadRequestException('Payment not successful');
-
     const booking = await this.bookingModel.findOne({ bookingId: reference });
     if (!booking) throw new NotFoundException('Booking not found');
-
-    if (booking.totalAmount !== amountPaid) {
-      throw new BadRequestException('Amount mismatch');
-    }
+    if (booking.totalAmount !== amountPaid) throw new BadRequestException('Amount mismatch');
 
     booking.status = 'booked';
     await booking.save();
 
-    await this.slotModel.updateMany(
-      { bookingId: reference },
-      { $set: { status: 'booked' } },
-    );
+    await this.slotModel.updateMany({ _id: { $in: booking.slotIds } }, { $set: { status: 'booked', bookingId: reference } });
+    await this.cacheService.del('all_bookings');
 
+    return { message: 'Payment verified, booking confirmed', bookingId: booking.bookingId, status: 'booked' };
+  }
+
+  /** Get bookings of a user */
+ async getUserBookings(userId: string) {
+  // Fetch all slots booked by the user
+  const userSlots = await this.slotModel.find({ bookedBy: userId }).sort({ date: -1 }).lean();
+  if (!userSlots.length) {
     return {
-      message: 'Payment verified and booking confirmed',
-      bookingId: booking.bookingId,
-      ticketId: booking.ticketId,
-      emailSent: !!(booking.user as any)?.email,
-      status: 'booked',
+      totalAmount: 0,
+      totalBookings: 0,
+      bookings: {},
     };
   }
 
-  /**
-   * 4️⃣ Get all slots booked by a specific user
-   */
-  async getUserBookings(userId: string) {
-    const filter = { bookedBy: userId, status: 'booked' };
-    const userSlots = await this.slotModel.find(filter).sort({ date: -1 }).lean();
-    if (!userSlots.length) return [];
+  // Group slots by bookingId
+  const bookings = userSlots.reduce((acc, slot) => {
+    const bookingId = slot.bookingId || 'unassigned';
+    acc[bookingId] = acc[bookingId] || [];
+    acc[bookingId].push({
+      slotId: slot._id,
+      date: slot.date,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      amount: slot.amount,
+      status: slot.status,
+    });
+    return acc;
+  }, {} as Record<string, any[]>);
 
-    const grouped = userSlots.reduce((acc, slot) => {
-      const bookingId = slot.bookingId || 'unassigned';
-      if (!acc[bookingId]) acc[bookingId] = [];
-      acc[bookingId].push(slot);
-      return acc;
-    }, {} as Record<string, any[]>);
+  // Calculate total amount and total bookings
+  const totalAmount = userSlots.reduce((sum, slot) => sum + (slot.amount || 0), 0);
+  const totalBookings = Object.keys(bookings).length;
 
-    return grouped;
-  }
-
-  /**
-   * 5️⃣ Get All Bookings
-   */
-  async getAllBookings() {
-    return this.bookingModel.find({ status: 'booked' }).sort({ createdAt: -1 }).lean();
-  }
-
-  /**
- * 6️⃣ Cancel or Delete a Pending Booking (User or Admin)
- */
-/**
- * Cancel or delete one or multiple bookings
- */
-async cancelOrDeleteBookings(
-  bookingIds: string[],
-  userId: string,
-  isAdmin: boolean
-) {
-  const session = await this.connection.startSession();
-  session.startTransaction();
-
-  try {
-    if (!bookingIds || bookingIds.length === 0) {
-      throw new BadRequestException('No bookings provided.');
-    }
-
-    const bookings = await this.bookingModel
-      .find({ bookingId: { $in: bookingIds } })
-      .session(session);
-
-    if (!bookings.length) {
-      throw new NotFoundException('No matching bookings found.');
-    }
-
-    for (const booking of bookings) {
-      // ✅ Permission check for user
-      if (!isAdmin && booking.user.toString() !== userId) {
-        throw new ForbiddenException('You can only cancel your own bookings.');
-      }
-
-      // ✅ Status check
-      if (!isAdmin && booking.status !== 'pending') {
-        throw new BadRequestException(
-          `Booking ${booking.bookingId} cannot be cancelled.`
-        );
-      }
-
-      // ✅ Free all related slots
-      await this.slotModel.updateMany(
-        { _id: { $in: booking.slotIds } },
-        { $set: { status: 'available', bookingId: null, bookedBy: null } },
-        { session }
-      );
-
-      // ✅ Delete or cancel
-      if (isAdmin) {
-        await this.bookingModel.deleteOne({ _id: booking._id }, { session });
-      } else {
-        await this.bookingModel.updateOne(
-          { _id: booking._id },
-          { $set: { status: 'cancelled' } },
-          { session }
-        );
-      }
-    }
-
-    await session.commitTransaction();
-    session.endSession();
-
-    return {
-      message: `${bookings.length} booking(s) ${isAdmin ? 'deleted' : 'cancelled'} successfully.`,
-    };
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    this.logger.error('Cancel/Delete error:', error);
-    throw new InternalServerErrorException('Failed to cancel or delete bookings');
-  }
-}
-
-/**
- * Single booking cancel wrapper (for convenience)
- */
-async cancelBooking(bookingId: string, userId: string, isAdmin: boolean) {
-  return this.cancelOrDeleteBookings([bookingId], userId, isAdmin);
+  return {
+    totalAmount,
+    totalBookings,
+    bookings,
+  };
 }
 
 
+  /** Get all bookings with caching */
+async getAllBookings() {
+  const cacheKey = 'all_bookings';
+  const cached = await this.cacheService.get(cacheKey);
+  if (cached) {
+    this.logger.log('Returning bookings from cache');
+    return { message: 'Bookings retrieved', bookings: cached };
+  }
+
+  // Fetch all bookings, regardless of status
+  const bookings = await this.bookingModel
+    .find()
+    .sort({ createdAt: -1 })
+    .populate('user', 'name email role') // populate user info
+    .populate('slotIds') // populate slots
+    .lean();
+
+  // Optional: structure bookings with slots
+  const structured = bookings.map((booking) => ({
+    bookingId: booking.bookingId,
+    user: booking.user,
+    totalAmount: booking.totalAmount,
+    status: booking.status,
+    createdAt: booking.createdAt,
+    slots: booking.slotIds.map((slot: any) => ({
+      slotId: slot._id,
+      date: slot.date,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      amount: slot.amount,
+      status: slot.status,
+    })),
+  }));
+
+  // Cache the structured result
+  await this.cacheService.set(cacheKey, structured, 120); // cache for 2 mins
+
+  return { message: 'Bookings retrieved', bookings: structured };
+}
+
+
+  /** Cancel or delete bookings */
+  async cancelOrDeleteBookings(bookingIds: string[], userId: string, isAdmin: boolean) {
+    const session = await this.connection.startSession();
+    session.startTransaction();
+
+    try {
+      if (!bookingIds?.length) throw new BadRequestException('No bookings provided');
+
+      const bookings = await this.bookingModel.find({ bookingId: { $in: bookingIds } }).session(session);
+      if (!bookings.length) throw new NotFoundException('No matching bookings found');
+
+      for (const booking of bookings) {
+        if (!isAdmin && booking.user.toString() !== userId) throw new ForbiddenException('You can only cancel your own bookings');
+        if (!isAdmin && booking.status !== 'pending') throw new BadRequestException(`Booking ${booking.bookingId} cannot be cancelled`);
+
+        await this.slotModel.updateMany(
+          { _id: { $in: booking.slotIds } },
+          { $set: { status: 'available', bookingId: null, bookedBy: null } },
+          { session },
+        );
+
+        if (isAdmin) await this.bookingModel.deleteOne({ _id: booking._id }, { session });
+        else await this.bookingModel.updateOne({ _id: booking._id }, { $set: { status: 'cancelled' } }, { session });
+      }
+
+      await session.commitTransaction();
+      await this.cacheService.del('all_bookings');
+
+      return { message: `${bookings.length} booking(s) ${isAdmin ? 'deleted' : 'cancelled'} successfully.` };
+    } catch (error) {
+      await session.abortTransaction();
+      this.logger.error('Cancel/Delete error', error);
+      throw new InternalServerErrorException('Failed to cancel or delete bookings');
+    } finally {
+      session.endSession();
+    }
+  }
+
+  /** Cancel single booking */
+  async cancelBooking(bookingId: string, userId: string, isAdmin: boolean) {
+    return this.cancelOrDeleteBookings([bookingId], userId, isAdmin);
+  }
 }

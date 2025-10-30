@@ -1,4 +1,3 @@
-// src/slots/schemas/slot.controller.ts
 import {
   Controller,
   Get,
@@ -32,13 +31,19 @@ interface AuthenticatedRequest extends Request {
 export class SlotController {
   constructor(private readonly slotService: SlotService) {}
 
-  // ✅ Public: view all slots for a date
+  // Test cache
+  @Get('cache-test')
+  async cacheTest() {
+    return this.slotService.testCache();
+  }
+
+  // Public: get slots for a date
   @Get()
   async findAll(@Query('date') date?: string) {
     return this.slotService.findAll(date);
   }
 
-  // ✅ Admin: create a slot
+  // Admin: create slot
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Post()
@@ -47,21 +52,21 @@ export class SlotController {
     return this.slotService.create(dto, req.user);
   }
 
-  // ✅ Admin: update a slot by date + startTime
+  // Admin: update slot
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
- @Patch()
+  @Patch()
   update(
-  @Query('date') date: string,
-  @Query('startTime') startTime: string,
-  @Body() dto: Partial<Omit<UpdateSlotDto, 'date' | 'startTime'>>,
-  @Req() req: AuthenticatedRequest,
-) {
-  if (!req.user) throw new ForbiddenException('Unauthorized');
-  return this.slotService.update(date, startTime, dto, req.user);
-}
+    @Query('date') date: string,
+    @Query('startTime') startTime: string,
+    @Body() dto: Partial<Omit<UpdateSlotDto, 'date' | 'startTime'>>,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    if (!req.user) throw new ForbiddenException('Unauthorized');
+    return this.slotService.update(date, startTime, dto, req.user);
+  }
 
-  // ✅ Admin: toggle slot active/inactive
+  // Admin: toggle slot active
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Patch('toggle')
@@ -75,7 +80,7 @@ export class SlotController {
     return this.slotService.toggleStatus(date, startTime, dto, req.user);
   }
 
-  // ✅ Admin: delete a slot
+  // Admin: delete slot
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Delete()
@@ -88,7 +93,7 @@ export class SlotController {
     return this.slotService.remove(date, startTime, req.user);
   }
 
-  /** 🔒 Admin: update global amount */
+  // Admin: update global amount
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Patch('update-global-amount')
@@ -100,7 +105,7 @@ export class SlotController {
     return this.slotService.updateGlobalAmount(amount, req.user);
   }
 
-  /** 🔒 Admin: add slot time to daily schedule */
+  // Admin: add slot time
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Patch('add-slot-time')
@@ -112,7 +117,7 @@ export class SlotController {
     return this.slotService.addSlotTime(time, req.user);
   }
 
-  /** 🔒 Admin: remove slot time from daily schedule */
+  // Admin: remove slot time
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   @Patch('remove-slot-time')
