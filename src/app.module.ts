@@ -1,31 +1,3 @@
-// import { Module } from '@nestjs/common';
-// import { ConfigModule } from '@nestjs/config';
-// import { MongooseModule } from '@nestjs/mongoose';
-// import { AuthModule } from './auth/auth.module';
-// import { UsersModule } from './users/users.module';
-// import { DatabaseModule } from './database/seeds/database.module';
-// import { MailModule } from './mail/mail.module';
-// import { SlotModule } from './slots/slot.module';
-// import { BookingsModule } from './bookings/bookings.module';
-
-// @Module({
-//   imports: [
-//     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
-//     MongooseModule.forRoot(process.env.MONGO_URI || ''),
-//     AuthModule,
-//     UsersModule,
-//     DatabaseModule,
-//     MailModule,
-//     SlotModule,
-//     BookingsModule,
-//   ],
-// })
-// export class AppModule {}
-//  console.log('✅ PORT from .env:', process.env.PORT);
-//   console.log('✅ APP_NAME from .env:', process.env.APP_NAME);
-//   console.log('✅ SMTP_HOST from .env:', process.env.SMTP_HOST);
-
-
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
@@ -35,14 +7,23 @@ import { DatabaseModule } from './database/seeds/database.module';
 import { MailModule } from './mail/mail.module';
 import { SlotModule } from './slots/slot.module';
 import { BookingsModule } from './bookings/bookings.module';
-import { GlobalCacheModule } from './cache/cache.module';
 import { TestModule } from './test/test.module';
+import { CacheService } from './cache/cache.service';
+import { CacheModule } from '@nestjs/cache-manager';
+import { GlobalCacheModule } from './cache/cache.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
     MongooseModule.forRoot(process.env.MONGO_URI || ''),
-    GlobalCacheModule, // only this manages Redis now
+
+    // ✅ Use built-in in-memory cache
+    CacheModule.register({
+      isGlobal: true,
+      ttl: 300, // default TTL 5 mins
+      max: 1000, // max items in cache
+    }),
+    GlobalCacheModule,
     AuthModule,
     UsersModule,
     DatabaseModule,
@@ -51,6 +32,7 @@ import { TestModule } from './test/test.module';
     BookingsModule,
     TestModule,
   ],
+  providers: [CacheService],
 })
 export class AppModule {
   constructor() {

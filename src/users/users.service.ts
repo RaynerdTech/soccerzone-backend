@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, NotFoundException, } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { User, UserDocument } from './schemas/user.schema';
@@ -53,14 +53,82 @@ export class UsersService {
   }
 
   // Get all users
-  async findAll(): Promise<UserDocument[]> {
-    try {
-      return await this.userModel.find().exec();
-    } catch (error) {
-      console.error('Error fetching users:', error);
-      throw new InternalServerErrorException('Error fetching users.');
-    }
+async findAll(): Promise<any[]> {
+  try {
+    // Fetch all users
+    const users = await this.userModel.find().lean();
+
+    // Fetch all bookings once
+    const allBookings = await this.bookingModel.find().lean();
+
+    // Combine user data with computed stats
+    const results = users.map((user) => {
+      const bookings = allBookings.filter(
+        (b) => String(b.user) === String(user._id)
+      );
+
+      const totalBookings = bookings.length;
+      const totalAmount = bookings.reduce(
+        (sum, b) => sum + (b.totalAmount || 0),
+        0
+      );
+
+      const latestBooking =
+        bookings.sort(
+          (a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)
+        )[0] || null;
+
+      const firstBooking =
+        bookings.sort(
+          (a, b) => +new Date(a.createdAt) - +new Date(b.createdAt)
+        )[0] || null;
+
+      return {
+        ...user, // keep all original user fields
+        totalBookings,
+        totalAmount,
+        firstBookingDate: firstBooking?.createdAt ?? null,
+        lastBookingDate: latestBooking?.createdAt ?? null,
+      };
+    });
+
+    return results;
+  } catch (error) {
+    console.error("Error fetching users with summaries:", error);
+    throw new InternalServerErrorException("Error fetching users.");
   }
+}
+
+
+  // user.service.ts or slot.service.ts
+
+async getAllUsersWithBookingStats() {
+  const users = await this.userModel.aggregate([
+    {
+      $lookup: {
+        from: 'bookings',
+        localField: '_id',
+        foreignField: 'userId',
+        as: 'bookings'
+      }
+    },
+    {
+      $addFields: {
+        totalBookings: { $size: '$bookings' },
+        lastBooking: { $max: '$bookings.createdAt' }
+      }
+    },
+    {
+      $project: {
+        password: 0, // never expose password
+        bookings: 0, // remove the joined array to keep output clean
+      }
+    }
+  ]);
+
+  return users;
+}
+
 
   // Find user by reset token
   async findByResetToken(token: string): Promise<UserDocument | null> {
@@ -87,14 +155,78 @@ export class UsersService {
   }
 
   // Find one user by ID
-  async findOne(id: string): Promise<UserDocument | null> {
-    try {
-      return await this.userModel.findById(id).exec();
-    } catch (error) {
-      console.error('Error finding user by ID:', error);
-      throw new InternalServerErrorException('Error finding user.');
+  // async findOne(id: string): Promise<UserDocument | null> {
+  //   try {
+  //     return await this.userModel.findById(id).exec();
+  //   } catch (error) {
+  //     console.error('Error finding user by ID:', error);
+  //     throw new InternalServerErrorException('Error finding user.');
+  //   }
+  // }
+
+  // Find one user by ID (with booking summary)
+async findOne(id: string): Promise<any> {
+  try {
+    const user = await this.userModel.findById(id).lean();
+
+    if (!user) {
+      throw new NotFoundException('User not found');
     }
+
+    // Fetch all bookings for this user
+    const bookings = await this.bookingModel
+      .find({ user: id })
+      .lean();
+
+    // Compute summary stats
+    const totalBookings = bookings.length;
+    const totalAmount = bookings.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
+    const confirmedBookings = bookings.filter(b => b.status === 'confirmed').length;
+    const pendingBookings = bookings.filter(b => b.status === 'pending').length;
+
+    // Latest and earliest bookings
+    const latestBooking = bookings.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0] || null;
+    const firstBooking = bookings.sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt))[0] || null;
+
+    // Build response
+    return {
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+       createdAt: (user as any).createdAt,
+      },
+      summary: {
+        totalBookings,
+        confirmedBookings,
+        pendingBookings,
+        totalAmount,
+        firstBookingDate: firstBooking?.createdAt ?? null,
+        lastBookingDate: latestBooking?.createdAt ?? null,
+      },
+      bookings: bookings.map(b => ({
+        id: b._id,
+        bookingId: b.bookingId,
+        status: b.status,
+        totalAmount: b.totalAmount,
+        slotCount: b.slotIds?.length || 0,
+        dates: b.dates || [],
+        startTimes: b.startTimes || [],
+        endTimes: b.endTimes || [],
+        paymentVerified: b.paymentVerified,
+        paymentRef: b.paymentRef,
+        ticketId: b.ticketId,
+        createdAt: b.createdAt,
+      })),
+    };
+  } catch (error) {
+    console.error('Error finding user by ID with bookings:', error);
+    throw new InternalServerErrorException('Error fetching user with bookings.');
   }
+}
+
 
   // Update user
   async update(id: string, updateUserDto): Promise<UserDocument | null> {

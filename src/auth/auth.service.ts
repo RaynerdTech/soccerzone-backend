@@ -173,47 +173,46 @@ async forgotPassword(email: string) {
   
 
   async getProfile(userId: string) {
-    const user = await this.usersService.findOne(userId);
-    if (!user) throw new NotFoundException('User not found');
+  const user = await this.usersService.findOne(userId);
+  if (!user) throw new NotFoundException('User not found');
 
-    // ✅ Populate slot details
-    const bookings = await this.bookingModel
-      .find({ user: userId })
-      .populate({
-        path: 'slotIds',
-        model: Slot.name,
-        select: 'date startTime endTime amount status',
-      })
-      .sort({ createdAt: -1 }) // optional: newest first
-      .lean();
+  // Ensure we have a plain JS object
+  const safeUser = (({ password, resetPasswordToken, resetPasswordExpires, ...rest }) => rest)(user);
 
-    // remove sensitive fields
-    const { password, resetPasswordToken, resetPasswordExpires, ...safeUser } =
-      user.toObject();
+  // Fetch bookings
+  const bookings = await this.bookingModel
+    .find({ user: userId })
+    .populate({
+      path: 'slotIds',
+      model: Slot.name,
+      select: 'date startTime endTime amount status bookedBy',
+    })
+    .sort({ createdAt: -1 })
+    .lean(); // make each booking a plain JS object
 
-    // format bookings
-    const formattedBookings = bookings.map((b) => ({
-      bookingId: b.bookingId,
-      totalAmount: b.totalAmount,
-      status: b.status,
-      paymentRef: b.paymentRef,
-      ticketId: b.ticketId,
-      email: b.emailSent,
-      createdAt: b.createdAt,
-      slots: (b.slotIds as any[]).map((slot) => ({
-        date: slot.date,
-        startTime: slot.startTime,
-        endTime: slot.endTime,
-        amount: slot.amount,
-        status: slot.status,
-        bookedBy: slot.bookedBy,
-      })),
-    }));
+  const formattedBookings = bookings.map((b) => ({
+    bookingId: b.bookingId,
+    totalAmount: b.totalAmount,
+    status: b.status,
+    paymentRef: b.paymentRef,
+    ticketId: b.ticketId,
+    email: b.emailSent,
+    createdAt: b.createdAt,
+    slots: (b.slotIds as any[]).map((slot) => ({
+      date: slot.date,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      amount: slot.amount,
+      status: slot.status,
+      bookedBy: slot.bookedBy,
+    })),
+  }));
 
-    return {
-      ...safeUser,
-      bookings: formattedBookings,
-    };
-  }
+  return {
+    ...safeUser,
+    bookings: formattedBookings,
+  };
+}
+
 
 }
