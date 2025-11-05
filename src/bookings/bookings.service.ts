@@ -36,7 +36,7 @@ export class BookingsService {
 
   /** Return default slot amount */
   getDefaultSlotAmount() {
-    return this.slotService.defaultSlotAmount;
+    return this.slotService.getDefaultSlotAmount();
   }
 
   /** Book slots by date and time */
@@ -61,7 +61,7 @@ export class BookingsService {
             endTime,
             status: 'available',
             isActive: true,
-            amount: this.slotService.defaultSlotAmount,
+            amount: this.slotService.getDefaultSlotAmount(),
           });
           await slot.save({ session });
         }
@@ -227,13 +227,18 @@ async getAllBookings() {
     .populate('slotIds') // populate slots
     .lean();
 
-  // Optional: structure bookings with slots
+  // Structure bookings with slots and payment/ticket info
   const structured = bookings.map((booking) => ({
     bookingId: booking.bookingId,
     user: booking.user,
     totalAmount: booking.totalAmount,
     status: booking.status,
     createdAt: booking.createdAt,
+    paymentRef: booking.paymentRef || null,
+    paymentVerified: booking.paymentVerified || false,
+    ticketId: booking.ticketId || null,
+    reference: booking.reference || null,
+    emailSent: booking.emailSent || false,
     slots: booking.slotIds.map((slot: any) => ({
       slotId: slot._id,
       date: slot.date,
@@ -244,11 +249,12 @@ async getAllBookings() {
     })),
   }));
 
-  // Cache the structured result
-  await this.cacheService.set(cacheKey, structured, 120); // cache for 2 mins
+  // Cache the result (optional)
+ await this.cacheService.set(cacheKey, structured, 300); // cache for 5 minutes
 
   return { message: 'Bookings retrieved', bookings: structured };
 }
+
 
 
   /** Cancel or delete bookings */
