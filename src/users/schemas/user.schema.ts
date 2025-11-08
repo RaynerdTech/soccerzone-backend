@@ -28,18 +28,10 @@ export class User {
   @Prop()
   resetPasswordExpires?: Date;
 
-  // Method to check password
+  // ✅ Method to check password
   async comparePassword(password: string): Promise<boolean> {
     return bcrypt.compare(password, this.password);
   }
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
-
-// ✅ Pre-save hook for hashing password
-UserSchema.pre<UserDocument>('save', async function (next) {
-  if (!this.isModified('password')) return next();
-  const hash = await bcrypt.hash(this.password, 10);
-  this.password = hash;
-  next();
-});

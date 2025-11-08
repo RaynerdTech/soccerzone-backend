@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, NotFoundException, } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { User, UserDocument } from './schemas/user.schema';
@@ -14,21 +14,33 @@ export class UsersService {
   ) {}
 
   // Create user (signup)
-  async createUser(dto: SignupDto): Promise<any> {
-    const role = dto.role || 'user';
-    const newUser = new this.userModel({ ...dto, role });
+    async createUser(dto: SignupDto): Promise<User> {
+    // Check for existing user
+    const existing = await this.userModel.findOne({
+      $or: [{ email: dto.email }, { phone: dto.phone }],
+    });
+    if (existing) throw new BadRequestException('User already exists');
 
-    try {
-      const savedUser = await newUser.save();
-      return { success: true, statusCode: 201, message: 'User created.', data: savedUser };
-    } catch (error: any) {
-      console.error('Error creating user:', error);
-      if (error.code === 11000) {
-        return { success: false, statusCode: 409, message: 'User already exists.', data: null };
-      }
-      return { success: false, statusCode: 500, message: 'Server error.', data: null };
-    }
+    // ✅ Hash the password before saving
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+    const user = new this.userModel({
+      ...dto,
+      password: hashedPassword,
+    });
+
+    return user.save();
   }
+
+  async findByPhone(phone: string): Promise<UserDocument | null> {
+  try {
+    return await this.userModel.findOne({ phone }).exec();
+  } catch (error) {
+    console.error('Error finding user by phone:', error);
+    throw new InternalServerErrorException('Error finding user by phone.');
+  }
+}
+
 
   // Find user by email, phone, or name
   async findByEmailOrPhone(identifier: string): Promise<UserDocument | null> {
@@ -282,4 +294,14 @@ async findOne(id: string): Promise<any> {
       throw new InternalServerErrorException('Error fetching stats.');
     }
   }
+
+  
+async updateUser(id: string, updateData: any) {
+  return this.update(id, updateData);
+}
+
+async findById(id: string) {
+  return this.userModel.findById(id).exec();
+}
+
 }
