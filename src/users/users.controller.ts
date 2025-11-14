@@ -16,6 +16,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Role } from '../auth/roles.enum';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { SignupDto } from '../auth/dto/signup.dto';
 
 // Extend Express Request to include `user`
 interface AuthenticatedRequest extends Request {
@@ -28,23 +29,47 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   // Create user (Admin/Super Admin)
+  // @Post()
+  // @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  // async create(@Body() createUserDto: any, @Req() req: AuthenticatedRequest) {
+  //   const user = req.user;
+  //   if (!user) throw new ForbiddenException('Unauthorized');
+
+  //   if (user.role === Role.SUPER_ADMIN) return this.usersService.create(createUserDto);
+
+  //   if (user.role === Role.ADMIN) {
+  //     if (createUserDto.role && createUserDto.role !== Role.USER) {
+  //       throw new ForbiddenException('Admins can only create users');
+  //     }
+  //     return this.usersService.create({ ...createUserDto, role: Role.USER });
+  //   }
+
+  //   throw new ForbiddenException('You cannot create users');
+  // }
+
+
   @Post()
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
-  async create(@Body() createUserDto: any, @Req() req: AuthenticatedRequest) {
-    const user = req.user;
-    if (!user) throw new ForbiddenException('Unauthorized');
+@Roles(Role.ADMIN, Role.SUPER_ADMIN)
+async create(@Body() createUserDto: SignupDto, @Req() req: AuthenticatedRequest) {
+  const user = req.user;
+  if (!user) throw new ForbiddenException('Unauthorized');
 
-    if (user.role === Role.SUPER_ADMIN) return this.usersService.create(createUserDto);
-
-    if (user.role === Role.ADMIN) {
-      if (createUserDto.role && createUserDto.role !== Role.USER) {
-        throw new ForbiddenException('Admins can only create users');
-      }
-      return this.usersService.create({ ...createUserDto, role: Role.USER });
-    }
-
-    throw new ForbiddenException('You cannot create users');
+  // 🔐 SUPER ADMIN: Can create any type of user
+  if (user.role === Role.SUPER_ADMIN) {
+    return this.usersService.createUser(createUserDto);
   }
+
+  // 🔐 ADMIN: Can only create normal users
+  if (user.role === Role.ADMIN) {
+    if (createUserDto.role && createUserDto.role !== Role.USER) {
+      throw new ForbiddenException('Admins can only create users');
+    }
+    return this.usersService.createUser({ ...createUserDto, role: Role.USER });
+  }
+
+  // ❌ No permission
+  throw new ForbiddenException('You cannot create users');
+}
 
   // Get all users
   @Get()
