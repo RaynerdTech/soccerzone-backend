@@ -1,21 +1,21 @@
 import {
-  Controller,
-  Post,
   Body,
-  Param,
-  Query,
+  Controller,
+  ForbiddenException,
   Get,
+  Param,
+  Patch,
+  Post,
+  Query,
   Req,
   UseGuards,
-  ForbiddenException,
-  Patch,
 } from '@nestjs/common';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '../auth/roles.enum';
-import { BookingsService } from './bookings.service';
 import { PaymentsService } from '../payments/payments.service';
+import { BookingsService } from './bookings.service';
 
 interface AuthenticatedRequest extends Request {
   user?: { id: string; email: string; role: Role };
@@ -58,11 +58,21 @@ export class BookingsController {
   /** 2. Re-initiate payment */
   @UseGuards(JwtAuthGuard)
   @Post('pay/:bookingId')
-  async initiatePayment(@Req() req: AuthenticatedRequest, @Param('bookingId') bookingId: string) {
+  async initiatePayment(
+    @Req() req: AuthenticatedRequest,
+    @Param('bookingId') bookingId: string,
+  ) {
     if (!req.user) throw new ForbiddenException('Unauthorized');
 
-    const payment = await this.bookingsService.initiatePayment(bookingId, req.user.email);
-    return { message: 'Payment initiated', paymentUrl: payment.paymentUrl, reference: payment.reference };
+    const payment = await this.bookingsService.initiatePayment(
+      bookingId,
+      req.user.email,
+    );
+    return {
+      message: 'Payment initiated',
+      paymentUrl: payment.paymentUrl,
+      reference: payment.reference,
+    };
   }
 
   /** 3. Paystack webhook listener */
@@ -114,16 +124,29 @@ export class BookingsController {
   @Post('verify-payment')
   async verifyPayment(@Body('reference') reference: string) {
     const result = await this.paymentService.verifyPayment(reference);
-    if (!result.success) return { success: false, statusCode: result.statusCode, message: result.message };
+    if (!result.success)
+      return {
+        success: false,
+        statusCode: result.statusCode,
+        message: result.message,
+      };
 
     const { bookingId, ticketId, slots } = result.data;
-    return { success: true, statusCode: 200, message: 'Payment verified', data: { bookingId, ticketId, slots } };
+    return {
+      success: true,
+      statusCode: 200,
+      message: 'Payment verified',
+      data: { bookingId, ticketId, slots },
+    };
   }
 
   /** 9. Cancel single booking */
   @UseGuards(JwtAuthGuard)
   @Patch(':bookingId/cancel')
-  async cancelSingleBooking(@Param('bookingId') bookingId: string, @Req() req: any) {
+  async cancelSingleBooking(
+    @Param('bookingId') bookingId: string,
+    @Req() req: any,
+  ) {
     const userId = req.user.id;
     const isAdmin = [Role.ADMIN, Role.SUPER_ADMIN].includes(req.user.role);
     return this.bookingsService.cancelBooking(bookingId, userId, isAdmin);
@@ -132,9 +155,16 @@ export class BookingsController {
   /** 10. Cancel multiple bookings */
   @UseGuards(JwtAuthGuard)
   @Patch('cancel/multiple')
-  async cancelMultipleBookings(@Req() req: any, @Body('bookingIds') bookingIds: string[]) {
+  async cancelMultipleBookings(
+    @Req() req: any,
+    @Body('bookingIds') bookingIds: string[],
+  ) {
     const userId = req.user.id;
     const isAdmin = [Role.ADMIN, Role.SUPER_ADMIN].includes(req.user.role);
-    return this.bookingsService.cancelOrDeleteBookings(bookingIds, userId, isAdmin);
+    return this.bookingsService.cancelOrDeleteBookings(
+      bookingIds,
+      userId,
+      isAdmin,
+    );
   }
 }

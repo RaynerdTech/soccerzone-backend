@@ -1,11 +1,11 @@
 // src/mail/mail.module.ts
-import { Module } from '@nestjs/common';
 import { MailerModule } from '@nestjs-modules/mailer';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { MailService } from './mail.service';
 import { HandlebarsAdapter } from '@nestjs-modules/mailer/dist/adapters/handlebars.adapter';
-import { join } from 'path';
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { existsSync } from 'fs';
+import { join } from 'path';
+import { MailService } from './mail.service';
 
 @Module({
   imports: [
@@ -18,8 +18,8 @@ import { existsSync } from 'fs';
 
         // Choose correct template directory based on environment
         const templatesPath = isProd
-          ? join(process.cwd(), 'dist', 'src', 'mail', 'templates')
-          : join(process.cwd(), 'src', 'mail', 'templates');
+          ? join(__dirname, 'templates') // PRODUCTION (compiled)
+          : join(process.cwd(), 'src', 'mail', 'templates'); // DEV
 
         console.log('🧩 Templates path:', templatesPath);
         console.log('Exists:', existsSync(templatesPath));
