@@ -1,20 +1,20 @@
 import {
-  Injectable,
-  UnauthorizedException,
-  NotFoundException,
   BadRequestException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { UsersService } from '../users/users.service';
-import * as bcrypt from 'bcrypt';
-import { SignupDto } from './dto/signup.dto';
-import { SigninDto } from './dto/signin.dto';
-import { MailService } from '../mail/mail.service';
-import { randomBytes } from 'crypto';
-import { Booking, BookingDocument } from '../bookings/schemas/booking.schema';
 import { InjectModel } from '@nestjs/mongoose';
+import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 import { Model } from 'mongoose';
+import { Booking, BookingDocument } from '../bookings/schemas/booking.schema';
+import { MailService } from '../mail/mail.service';
 import { Slot } from '../slots/schemas/slot.schema';
+import { UsersService } from '../users/users.service';
+import { SigninDto } from './dto/signin.dto';
+import { SignupDto } from './dto/signup.dto';
 
 @Injectable()
 export class AuthService {
@@ -39,7 +39,11 @@ export class AuthService {
 
     const user = await this.usersService.createUser(dto);
 
-    const payload = { sub: (user as any)._id, role: user.role };
+    const payload = {
+      sub: (user as any)._id,
+      role: user.role,
+      email: user.email,
+    };
     const token = this.jwtService.sign(payload);
 
     setImmediate(async () => {
@@ -77,7 +81,8 @@ export class AuthService {
     if (!user) throw new UnauthorizedException('Invalid credentials');
 
     const isPasswordValid = await bcrypt.compare(dto.password, user.password);
-    if (!isPasswordValid) throw new UnauthorizedException('Invalid credentials');
+    if (!isPasswordValid)
+      throw new UnauthorizedException('Invalid credentials');
 
     const payload = { sub: user._id, role: user.role, email: user.email };
     const token = this.jwtService.sign(payload);
@@ -99,7 +104,11 @@ export class AuthService {
     });
 
     const resetLink = `${process.env.FRONTEND_URL}/reset-password/${token}`;
-    await this.mailService.sendForgotPasswordEmail(user.email, user.name, resetLink);
+    await this.mailService.sendForgotPasswordEmail(
+      user.email,
+      user.name,
+      resetLink,
+    );
 
     return { message: 'Password reset link sent to your email' };
   }
@@ -131,7 +140,14 @@ export class AuthService {
     const user = await this.usersService.findOne(userId);
     if (!user) throw new NotFoundException('User not found');
 
-    const safeUser = (({ password, resetPasswordToken, resetPasswordExpires, otpCode, otpExpires, ...rest }) => rest)(user);
+    const safeUser = (({
+      password,
+      resetPasswordToken,
+      resetPasswordExpires,
+      otpCode,
+      otpExpires,
+      ...rest
+    }) => rest)(user);
 
     const bookings = await this.bookingModel
       .find({ user: userId })
