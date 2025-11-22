@@ -17,6 +17,7 @@ import { MailService } from '../mail/mail.service';
 import { PaymentsService } from '../payments/payments.service';
 import { Slot, SlotDocument } from '../slots/schemas/slot.schema';
 import { SlotService } from '../slots/slot.service';
+import { UsersService } from '../users/users.service';
 import { Booking, BookingDocument } from './schemas/booking.schema';
 
 @Injectable()
@@ -32,6 +33,7 @@ export class BookingsService {
     private readonly mailService: MailService,
     private readonly paymentsService: PaymentsService,
     private readonly cacheService: CacheService,
+    private readonly usersService: UsersService,
   ) {}
 
   /** Return default slot amount */
@@ -118,6 +120,7 @@ export class BookingsService {
         statusCode: 201,
         message: 'Booking created, payment pending',
         bookingId,
+        email: userEmail || null,
         totalAmount,
         status: 'pending',
         slots: slotsToBook.map((s) => ({
@@ -360,5 +363,272 @@ export class BookingsService {
   /** Cancel single booking */
   async cancelBooking(bookingId: string, userId: string, isAdmin: boolean) {
     return this.cancelOrDeleteBookings([bookingId], userId, isAdmin);
+  }
+
+  // async adminBookSlot(
+  //   date: string,
+  //   dto: CreateBookingDto & { userId: string },
+  // ) {
+  //   const { userId, userEmail, startTimes, teamName } = dto;
+
+  //   if (!startTimes || !startTimes.length) {
+  //     throw new BadRequestException('At least one startTime is required');
+  //   }
+
+  //   const session = await this.connection.startSession();
+  //   session.startTransaction();
+
+  //   try {
+  //     const slotsToBook: SlotDocument[] = [];
+  //     const unavailableSlots: string[] = [];
+
+  //     for (const startTime of startTimes) {
+  //       let slot = await this.slotModel
+  //         .findOne({ date, startTime })
+  //         .session(session);
+
+  //       if (!slot) {
+  //         const endTime = this.slotService.calculateEndTime(startTime);
+  //         slot = new this.slotModel({
+  //           date,
+  //           startTime,
+  //           endTime,
+  //           status: 'available',
+  //           isActive: true,
+  //           amount: this.slotService.getDefaultSlotAmount(),
+  //         });
+  //         await slot.save({ session });
+  //       }
+
+  //       if (slot.status !== 'available') {
+  //         unavailableSlots.push(startTime);
+  //       } else {
+  //         slotsToBook.push(slot);
+  //       }
+  //     }
+
+  //     if (unavailableSlots.length) {
+  //       throw new ConflictException(
+  //         `The following slots are unavailable: ${unavailableSlots.join(', ')}`,
+  //       );
+  //     }
+
+  //     const totalAmount = slotsToBook.reduce((sum, s) => sum + s.amount, 0);
+  //     const bookingId = uuidv4();
+
+  //     await this.bookingModel.create(
+  //       [
+  //         {
+  //           bookingId,
+  //           bookedBy: userId,
+  //           userEmail: userEmail || null,
+  //           teamName: teamName || null,
+  //           slotIds: slotsToBook.map((s) => s._id),
+  //           dates: slotsToBook.map((s) => s.date),
+  //           startTimes: slotsToBook.map((s) => s.startTime),
+  //           endTimes: slotsToBook.map((s) => s.endTime),
+  //           totalAmount,
+  //           status: 'paid',
+  //         },
+  //       ],
+  //       { session },
+  //     );
+
+  //     await session.commitTransaction();
+  //     await this.cacheService.del('all_bookings');
+
+  //     return {
+  //       statusCode: 201,
+  //       message: 'Booking created successfully (cash)',
+  //       bookingId,
+  //       totalAmount,
+  //       status: 'paid',
+  //       slots: slotsToBook.map((s) => ({
+  //         slotId: s._id,
+  //         startTime: s.startTime,
+  //         endTime: s.endTime,
+  //         amount: s.amount,
+  //       })),
+  //     };
+  //   } catch (error) {
+  //     await session.abortTransaction();
+  //     console.error('Admin booking error', error);
+  //     throw new InternalServerErrorException(error.message || 'Booking failed');
+  //   } finally {
+  //     session.endSession();
+  //   }
+  // }
+
+  async adminBookByDateTime(
+    adminId: string,
+    date: string,
+    startTimes: string[],
+    userEmail?: string,
+    teamName?: string,
+  ) {
+    const session = await this.connection.startSession();
+    session.startTransaction();
+
+    try {
+      if (!Array.isArray(startTimes) || !startTimes.length)
+        throw new BadRequestException('Start times required');
+
+      const slotsToBook: SlotDocument[] = [];
+      const unavailableSlots: string[] = [];
+
+      // 🔍 Create or fetch slots
+      for (const startTime of startTimes) {
+        let slot = await this.slotModel
+          .findOne({ date, startTime })
+          .session(session);
+
+        if (!slot) {
+          const endTime = this.slotService.calculateEndTime(startTime);
+          slot = new this.slotModel({
+            date,
+            startTime,
+            endTime,
+            status: 'available',
+            isActive: true,
+            amount: this.slotService.getDefaultSlotAmount(),
+          });
+          await slot.save({ session });
+        }
+
+        slot.status !== 'available'
+          ? unavailableSlots.push(startTime)
+          : slotsToBook.push(slot);
+      }
+
+      if (unavailableSlots.length)
+        throw new ConflictException(
+          `Slots not available: ${unavailableSlots.join(', ')}`,
+        );
+
+      const totalAmount = slotsToBook.reduce((sum, s) => sum + s.amount, 0);
+      const bookingId = uuidv4();
+
+      // 📌 Create booking
+      await this.bookingModel.create(
+        [
+          {
+            bookingId,
+            user: adminId,
+            userEmail: userEmail || null,
+            teamName: teamName || null,
+            slotIds: slotsToBook.map((s) => s._id),
+            dates: slotsToBook.map((s) => s.date),
+            startTimes: slotsToBook.map((s) => s.startTime),
+            endTimes: slotsToBook.map((s) => s.endTime),
+            totalAmount,
+            status: 'paid',
+          },
+        ],
+        { session },
+      );
+
+      await session.commitTransaction();
+      await this.cacheService.del('all_bookings');
+      session.endSession();
+
+      // ===========================================
+      // 🔄 Fetch newly created booking (outside session)
+      // ===========================================
+      const booking = await this.bookingModel.findOne({ bookingId });
+      if (!booking)
+        throw new NotFoundException('Booking not found after creation');
+
+      // 🎫 Generate ticket
+      const ticketId = this.generateTicketId();
+      const emailSent = !!userEmail;
+
+      // 📌 Update booking to confirmed (cash)
+      booking.status = 'confirmed';
+      (booking as any).paymentStatus = 'paid';
+      booking.paymentVerified = true;
+      booking.ticketId = ticketId;
+      booking.emailSent = emailSent;
+
+      await booking.save();
+
+      // 🏷️ Mark slots as booked
+      await this.slotModel.updateMany(
+        { _id: { $in: booking.slotIds } },
+        {
+          $set: {
+            status: 'booked',
+            bookingId: booking.bookingId,
+            bookedBy: adminId,
+          },
+        },
+      );
+
+      // 🔁 Refetch slots for email payload
+      const slots = await this.slotModel.find({
+        _id: { $in: booking.slotIds },
+      });
+
+      // 📧 Send ticket confirmation email
+      if (emailSent) {
+        const payload = {
+          teamName: teamName || userEmail || 'Guest Team',
+          date: new Date().toLocaleDateString(),
+          ticketId,
+          bookings: slots.map((slot) => ({
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+          })),
+        };
+
+        if (userEmail) {
+          this.mailService
+            .sendSignupInviteEmail(userEmail, teamName || 'Guest Team')
+            .catch(console.error);
+        }
+      }
+
+      // 🎉 Final response
+      return {
+        statusCode: 201,
+        message: 'Admin booking created successfully (cash)',
+        bookingId,
+        teamName: teamName || null,
+        ticketId,
+        totalAmount,
+        status: 'confirmed',
+        email: userEmail || null,
+        emailSent,
+        slots: slots.map((s) => ({
+          slotId: s._id,
+          startTime: s.startTime,
+          endTime: s.endTime,
+          amount: s.amount,
+        })),
+      };
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      this.logger.error('Admin booking error', error);
+      throw new InternalServerErrorException(error.message || 'Booking failed');
+    }
+  }
+
+  private generateTicketId(): string {
+    const requiredLetters = ['S', 'C', 'Z'];
+    const numbers = '0123456789'.split('');
+    const chars: string[] = [];
+
+    chars.push(...requiredLetters);
+    for (let i = 0; i < 6; i++) {
+      chars.push(numbers[Math.floor(Math.random() * numbers.length)]);
+    }
+
+    // Shuffle
+    for (let i = chars.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+
+    return chars.join('');
   }
 }

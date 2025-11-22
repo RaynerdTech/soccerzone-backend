@@ -87,7 +87,10 @@ export class AuthService {
     const payload = { sub: user._id, role: user.role, email: user.email };
     const token = this.jwtService.sign(payload);
 
-    return { user, token };
+    // EXCLUDE PASSWORD
+    const { password, ...safeUser } = user.toObject ? user.toObject() : user;
+
+    return { user: safeUser, token };
   }
 
   // Forgot password
@@ -96,7 +99,7 @@ export class AuthService {
     if (!user) throw new NotFoundException('No account found with this email');
 
     const token = randomBytes(32).toString('hex');
-    const expiry = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+    const expiry = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
 
     await this.usersService.update(user.id, {
       resetPasswordToken: token,
@@ -104,6 +107,7 @@ export class AuthService {
     });
 
     const resetLink = `${process.env.FRONTEND_URL}/reset-password/${token}`;
+
     await this.mailService.sendForgotPasswordEmail(
       user.email,
       user.name,
@@ -121,8 +125,6 @@ export class AuthService {
     if (!user.resetPasswordExpires || user.resetPasswordExpires < new Date()) {
       throw new BadRequestException('Reset token has expired');
     }
-
-    // const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     await this.usersService.update(user.id, {
       password: newPassword,

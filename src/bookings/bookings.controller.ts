@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   ForbiddenException,
@@ -48,6 +49,7 @@ export class BookingsController {
     return {
       message: booking.message,
       bookingId: booking.bookingId,
+      userEmail: req.user.email,
       totalAmount: booking.totalAmount,
       paymentUrl: booking.paymentUrl,
       reference: booking.paymentRef || null,
@@ -166,5 +168,74 @@ export class BookingsController {
       userId,
       isAdmin,
     );
+  }
+
+  /** Admin: create a booking for a user (no payment auto-init) */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Post('admin/book')
+  async adminBookForUser(
+    @Body('userId') userId: string,
+    @Body('userEmail') userEmail: string,
+    @Query('date') date: string,
+    @Body('startTimes') startTimes: string[],
+  ) {
+    if (!userId || !userEmail)
+      throw new BadRequestException('userId and userEmail are required');
+
+    const booking = await this.bookingsService.bookByDateTime(
+      userId,
+      date,
+      startTimes,
+      userEmail,
+    );
+
+    return {
+      message: 'Admin booking created successfully',
+      bookingId: booking.bookingId,
+      totalAmount: booking.totalAmount,
+      status: booking.status,
+      slots: booking.slots,
+      paymentUrl: booking.paymentUrl, // optional if you want admin-controlled payment
+      reference: booking.paymentRef || null,
+    };
+  }
+
+  /** Admin: book for a user WITHOUT payment (auto-mark paid) */
+  // @UseGuards(JwtAuthGuard, RolesGuard)
+  // @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  // @Post('admin/book-cash')
+  // async adminBookCash(@Body() dto: CreateBookingDto) {
+  //   const booking = await this.bookingsService.adminBookSlot(dto);
+
+  //   return {
+  //     message: booking.message,
+  //     bookingId: booking.bookingId,
+  //     totalAmount: booking.totalAmount,
+  //     status: booking.status,
+  //     slots: booking.slots,
+  //   };
+  // }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('admin/book-cash')
+  async adminBookCash(
+    @Req() req,
+    @Query('date') date: string,
+    @Body('startTimes') startTimes: string[],
+    @Body('userEmail') userEmail?: string,
+    @Body('teamName') teamName?: string,
+  ) {
+    if (!req.user) throw new ForbiddenException('Unauthorized');
+
+    const booking = await this.bookingsService.adminBookByDateTime(
+      req.user.id, // admin user id
+      date,
+      startTimes,
+      userEmail,
+      teamName,
+    );
+
+    return booking;
   }
 }

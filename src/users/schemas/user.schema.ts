@@ -1,7 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import * as bcrypt from 'bcrypt';
 import { Document } from 'mongoose';
 import { Role } from '../../auth/roles.enum';
-import * as bcrypt from 'bcrypt';
 
 export type UserDocument = User & Document;
 
@@ -23,12 +23,14 @@ export class User {
   name: string;
 
   @Prop()
+  avatar?: string; // ✅ OPTIONAL AVATAR ADDED HERE
+
+  @Prop()
   resetPasswordToken?: string;
 
   @Prop()
   resetPasswordExpires?: Date;
 
-  // ✅ Method to check password
   async comparePassword(password: string): Promise<boolean> {
     return bcrypt.compare(password, this.password);
   }
